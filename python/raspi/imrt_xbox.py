@@ -69,7 +69,7 @@ class IMRTxbox:
                     (but_time, but_value, but_type, but_num) = struct.unpack("ihBB", event)
                     if but_type == 1:
                         self._mutex.acquire()
-                        self._buttons[but_num] = not but_value
+                        self._buttons[but_num] = bool(but_value)
                         self._mutex.release()
 
                     elif but_type == 2:
