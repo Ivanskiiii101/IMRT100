@@ -7,8 +7,9 @@ import signal
 import time
 import sys
 
-import inspect
-print(inspect.getsource(imrt_robot_serial.gcd))  # Replace 'math.gcd' with your target function
+
+# Distance in centimetres where the middle sensor stops both motors
+STOP_DISTANCE = 25
 
 
 # We want our program to send commands at 10 Hz (10 commands per second)
@@ -71,8 +72,15 @@ while not motor_serial.shutdown_now :
     # In this simple example we will multiply each sensor reading
     # with a constant to obtain our commands
     gain = 2
-    speed_motor_1 = dist_1 * gain
-    speed_motor_2 = dist_2 * gain
+
+    # Stop both motors when the middle sensor detects an obstacle
+    if dist_3 < STOP_DISTANCE:
+        speed_motor_1 = 0
+        speed_motor_2 = 0
+        print("Obstacle in middle - stopping both motors")
+    else:
+        speed_motor_1 = dist_1 * gain
+        speed_motor_2 = dist_2 * gain
 
 
 
