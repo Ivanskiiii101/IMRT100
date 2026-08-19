@@ -9,7 +9,7 @@ import sys
 
 
 # Distance in centimetres where the middle sensor stops both motors
-STOP_DISTANCE = 5
+STOP_DISTANCE = 25
 
 
 # We want our program to send commands at 10 Hz (10 commands per second)
