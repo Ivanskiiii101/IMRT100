@@ -7,6 +7,9 @@ import signal
 import time
 import sys
 
+import inspect
+print(inspect.getsource(imrt_robot_serial.gcd))  # Replace 'math.gcd' with your target function
+
 
 # We want our program to send commands at 10 Hz (10 commands per second)
 execution_frequency = 10 #Hz
@@ -59,14 +62,15 @@ while not motor_serial.shutdown_now :
     # Get and print readings from distance sensors
     dist_1 = motor_serial.get_dist_1()
     dist_2 = motor_serial.get_dist_2()
-    print("Dist 1:", dist_1, "   Dist 2:", dist_2)
+    dist_3 = motor_serial.get_dist_3()
+    print("Sensor_Right:", dist_1, "   Sensor_Left:", dist_2,"Sensor_Middle:", dist_3)
 
     
 
     # Calculate commands for each motor using sensor readings
     # In this simple example we will multiply each sensor reading
     # with a constant to obtain our commands
-    gain = 8
+    gain = 2
     speed_motor_1 = dist_1 * gain
     speed_motor_2 = dist_2 * gain
 
