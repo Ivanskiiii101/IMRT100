@@ -9,7 +9,7 @@ import sys
 
 
 # Distance in centimetres where the middle sensor stops both motors
-STOP_DISTANCE = 25
+STOP_DISTANCE = 5
 
 
 # We want our program to send commands at 10 Hz (10 commands per second)
@@ -62,8 +62,16 @@ while not motor_serial.shutdown_now :
 
     # Get and print readings from distance sensors
     dist_1 = motor_serial.get_dist_1()
+    if dist_1 < STOP_DISTANCE:
+        dist_1 = 0
+    
     dist_2 = motor_serial.get_dist_2()
+    if dist_2 < STOP_DISTANCE:
+        dist_2 = 0
     dist_3 = motor_serial.get_dist_3()
+    if dist_3 < STOP_DISTANCE:
+    dist_3 = 0
+    
     print("Sensor_Right:", dist_1, "   Sensor_Left:", dist_2,"Sensor_Middle:", dist_3)
 
     
@@ -80,9 +88,10 @@ while not motor_serial.shutdown_now :
         print("Obstacle in middle - stopping both motors")
     else:
         speed_motor_1 = dist_1 * gain
-        speed_motor_2 = dist_2 * gain
+        #speed_motor_2 = dist_2 * gain
 
 
+    
 
     # Send commands to motor
     # Max speed is 400.
