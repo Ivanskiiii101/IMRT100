@@ -10,6 +10,7 @@ import sys
 
 # Distance in centimetres where the middle sensor stops both motors
 STOP_DISTANCE = 25
+REVERSE_SPEED = 100
 
 
 # We want our program to send commands at 10 Hz (10 commands per second)
@@ -71,8 +72,15 @@ while not motor_serial.shutdown_now :
     dist_3 = motor_serial.get_dist_3()
     if dist_3 < STOP_DISTANCE:
         dist_3 = 0
+
+    sensor_behind = motor_serial.get_dist_4()
+    if sensor_behind < STOP_DISTANCE:
+        sensor_behind = 0
     
-    print("Sensor_Right:", dist_1, "   Sensor_Left:", dist_2,"Sensor_Middle:", dist_3)
+    print("Sensor_Right:", dist_1,
+          "Sensor_Left:", dist_2,
+          "Sensor_Middle:", dist_3,
+          "Sensor_Behind:", sensor_behind)
 
     
 
@@ -84,11 +92,16 @@ while not motor_serial.shutdown_now :
     speed_motor_1 = dist_1 * gain
     speed_motor_2 = dist_2 * gain
 
-    # Stop both motors when the middle sensor detects an obstacle
+    # Reverse when the middle sensor is blocked and the rear is clear
     if dist_3 == 0:
-        speed_motor_1 = 0
-        speed_motor_2 = 0
-        print("Obstacle in middle - stopping both motors")
+        if sensor_behind == 0:
+            speed_motor_1 = 0
+            speed_motor_2 = 0
+            print("Blocked in front and behind - stopping both motors")
+        else:
+            speed_motor_1 = -REVERSE_SPEED
+            speed_motor_2 = -REVERSE_SPEED
+            print("Front blocked and rear clear - reversing")
 
     # If both sides are close but the middle is clear, drive forwards
     elif dist_1 == 0 and dist_2 == 0:
