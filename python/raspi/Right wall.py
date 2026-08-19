@@ -6,11 +6,13 @@ import time
 import imrt_robot_serial
 
 
-# Sensor-number mapping. Change these after covering each sensor by hand and
-# observing which dist_N value changes.
-SENSOR_LEFT = 1
-SENSOR_CENTRE = 2
-SENSOR_RIGHT = 3
+# Sensor-number mapping, matching the labels used in
+# imrt_robot_sensor_example.py. Re-verify by covering each sensor by hand if
+# the robot still seems to misjudge distances.
+SENSOR_RIGHT = 1
+SENSOR_LEFT = 2
+SENSOR_CENTRE = 3
+SENSOR_BEHIND = 4
 
 # Conservative initial motor commands. The Arduino accepts -500 to +500.
 FORWARD_SPEED = 150
@@ -30,6 +32,19 @@ JUNCTION_ADVANCE_SECONDS = 0.25
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 OPEN_CONFIRM_SAMPLES = 3
 
+# After the timed pivot, keep nudging in short bursts if the right sensor
+# has not yet found a plausible wall, instead of trusting the fixed timing
+# alone (motor speed drifts with battery voltage and floor friction).
+PIVOT_CORRECTION_STEP_SECONDS = 0.08
+MAX_PIVOT_CORRECTION_SECONDS = 0.4
+
+# Before pivoting in place at a dead end, back away from the front wall a
+# little if the rear sensor confirms there is room, so the chassis corners
+# don't clip the wall while turning.
+REAR_CLEARANCE_CM = 15
+BACKUP_SPEED = 120
+BACKUP_SECONDS = 0.2
+
 # Change either sign if a positive command drives that motor backwards.
 MOTOR_1_SIGN = 1
 MOTOR_2_SIGN = 1
@@ -42,7 +57,7 @@ def clamp(value, lower=-500, upper=500):
 class RightWallFollower:
     def __init__(self, robot):
         self.robot = robot
-        self.history = {number: deque(maxlen=3) for number in (1, 2, 3)}
+        self.history = {number: deque(maxlen=3) for number in (1, 2, 3, 4)}
         self.right_open_count = 0
         self.exit_open_count = 0
 
@@ -70,17 +85,41 @@ class RightWallFollower:
         # Move the wheel axle toward the centre of the junction before pivoting.
         self.timed_drive(FORWARD_SPEED, FORWARD_SPEED,
                          JUNCTION_ADVANCE_SECONDS)
-        self.timed_drive(TURN_SPEED, -TURN_SPEED, TURN_90_SECONDS)
+        self._pivot(TURN_SPEED, -TURN_SPEED)
 
     def turn_left(self):
         self.stop()
-        self.timed_drive(-TURN_SPEED, TURN_SPEED, TURN_90_SECONDS)
+        self._pivot(-TURN_SPEED, TURN_SPEED)
+
+    def dead_end_turn(self, behind):
+        self.stop()
+        # Only back up if the rear sensor confirms there's room; otherwise
+        # pivot in place as before.
+        if behind >= REAR_CLEARANCE_CM:
+            self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, BACKUP_SECONDS)
+        self.turn_left()
+
+    def _pivot(self, motor_1, motor_2):
+        self.timed_drive(motor_1, motor_2, TURN_90_SECONDS)
+        self.stop()
+
+        # The fixed duration above is only an estimate; verify the right
+        # sensor now sees a wall at a plausible distance and, if not, keep
+        # rotating in short bursts rather than trusting the timing alone.
+        deadline = time.monotonic() + MAX_PIVOT_CORRECTION_SECONDS
+        while time.monotonic() < deadline and not self.robot.shutdown_now:
+            right = self.read_distances()[SENSOR_RIGHT]
+            if RIGHT_TARGET_CM * 0.5 <= right <= RIGHT_OPEN_CM:
+                return
+            self.timed_drive(motor_1, motor_2, PIVOT_CORRECTION_STEP_SECONDS)
+            self.stop()
 
     def read_distances(self):
         raw = {
             1: self.robot.get_dist_1(),
             2: self.robot.get_dist_2(),
             3: self.robot.get_dist_3(),
+            4: self.robot.get_dist_4(),
         }
         for number, value in raw.items():
             self.history[number].append(value)
@@ -98,10 +137,11 @@ class RightWallFollower:
             left = distances[SENSOR_LEFT]
             centre = distances[SENSOR_CENTRE]
             right = distances[SENSOR_RIGHT]
+            behind = distances[SENSOR_BEHIND]
 
             print(
                 f"left={left:5.1f}  centre={centre:5.1f}  "
-                f"right={right:5.1f}",
+                f"right={right:5.1f}  behind={behind:5.1f}",
                 end="\r",
                 flush=True,
             )
@@ -132,7 +172,7 @@ class RightWallFollower:
             # If forward is blocked and right was not open, follow the wall by
             # turning left. Repeating this at a dead end produces a U-turn.
             if centre <= FRONT_STOP_CM:
-                self.turn_left()
+                self.dead_end_turn(behind)
                 continue
 
             # While moving straight, gently correct toward the target distance
