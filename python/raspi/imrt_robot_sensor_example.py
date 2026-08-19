@@ -81,14 +81,21 @@ while not motor_serial.shutdown_now :
     # with a constant to obtain our commands
     gain = 2
 
-    # Stop both motors when the middle sensor detects an obstacle
     speed_motor_1 = dist_1 * gain
     speed_motor_2 = dist_2 * gain
 
+    # Stop both motors when the middle sensor detects an obstacle
     if dist_3 == 0:
-      speed_motor_1 = 0
-      speed_motor_2 = 0
-      print("Obstacle in middle - stopping both motors")
+        speed_motor_1 = 0
+        speed_motor_2 = 0
+        print("Obstacle in middle - stopping both motors")
+
+    # If both sides are close but the middle is clear, drive forwards
+    elif dist_1 == 0 and dist_2 == 0:
+        forward_speed = min(dist_3 * gain, 150)
+        speed_motor_1 = forward_speed
+        speed_motor_2 = forward_speed
+        print("Both sides close, but middle clear - driving forwards")
 
 # Speed_motor 1 is the left wheel, speed_motor 2 is the right wheel
     
