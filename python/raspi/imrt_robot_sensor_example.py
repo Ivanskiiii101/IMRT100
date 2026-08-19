@@ -79,18 +79,18 @@ while not motor_serial.shutdown_now :
     # Calculate commands for each motor using sensor readings
     # In this simple example we will multiply each sensor reading
     # with a constant to obtain our commands
-    gain = 1
+    gain = 2
 
     # Stop both motors when the middle sensor detects an obstacle
-    if dist_3 < STOP_DISTANCE:
-        speed_motor_1 = 0
-        speed_motor_2 = 0
-        print("Obstacle in middle - stopping both motors")
-    else:
-        speed_motor_1 = dist_1 * gain
-        #speed_motor_2 = dist_2 * gain
+    speed_motor_1 = dist_1 * gain
+    speed_motor_2 = dist_2 * gain
 
+    if dist_3 == 0:
+      speed_motor_1 = 0
+      speed_motor_2 = 0
+      print("Obstacle in middle - stopping both motors")
 
+# Speed_motor 1 is the left wheel, speed_motor 2 is the right wheel
     
 
     # Send commands to motor
