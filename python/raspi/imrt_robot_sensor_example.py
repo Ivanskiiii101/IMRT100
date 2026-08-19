@@ -70,7 +70,7 @@ while not motor_serial.shutdown_now :
         dist_2 = 0
     dist_3 = motor_serial.get_dist_3()
     if dist_3 < STOP_DISTANCE:
-    dist_3 = 0
+        dist_3 = 0
     
     print("Sensor_Right:", dist_1, "   Sensor_Left:", dist_2,"Sensor_Middle:", dist_3)
 
