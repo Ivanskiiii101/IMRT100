@@ -71,7 +71,7 @@ while not motor_serial.shutdown_now :
     # Calculate commands for each motor using sensor readings
     # In this simple example we will multiply each sensor reading
     # with a constant to obtain our commands
-    gain = 2
+    gain = 0.2
 
     # Stop both motors when the middle sensor detects an obstacle
     if dist_3 < STOP_DISTANCE:
