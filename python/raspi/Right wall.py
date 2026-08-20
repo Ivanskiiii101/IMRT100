@@ -16,6 +16,7 @@ SENSOR_BEHIND = 4
 
 # Conservative initial motor commands. The Arduino accepts -500 to +500.
 FORWARD_SPEED = 150
+MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 CORRECTION = 35
 TURN_SPEED = 140
 
@@ -199,7 +200,13 @@ class RightWallFollower:
                 speed_scale = (centre - FRONT_STOP_CM) / (
                     FRONT_SLOWDOWN_CM - FRONT_STOP_CM
                 )
-                forward_speed = FORWARD_SPEED * max(0.0, min(1.0, speed_scale))
+                speed_scale = max(0.0, min(1.0, speed_scale))
+                # Floor at MIN_FORWARD_SPEED, not 0: a command too weak to
+                # overcome motor friction leaves the robot stuck reporting
+                # the same distance forever instead of actually stopping.
+                forward_speed = MIN_FORWARD_SPEED + (
+                    FORWARD_SPEED - MIN_FORWARD_SPEED
+                ) * speed_scale
             else:
                 forward_speed = FORWARD_SPEED
 
