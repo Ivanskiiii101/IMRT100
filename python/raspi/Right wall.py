@@ -25,8 +25,13 @@ FRONT_STOP_CM = 25
 FRONT_SLOWDOWN_CM = 50
 RIGHT_NEAR_CM = 26     # steer away from the wall below this
 RIGHT_FAR_CM = 60      # steer back toward the wall above this
-RIGHT_OPEN_CM = 90      # sustained reading above this means a real junction
+RIGHT_OPEN_CM = 70      # sustained reading above this means a real junction
 EXIT_OPEN_CM = 180
+
+# If the left distance drops at least this much from its recent minimum, the
+# robot is very likely swinging around a corner as the right wall opens up -
+# treat that as extra confirmation of a real junction, on top of RIGHT_OPEN_CM.
+LEFT_DROP_CM = 15
 
 # Raw sensor value (0-255) meaning "no echo received." Also happens when an
 # object is closer than the sensor's minimum range - see read_distances().
@@ -73,6 +78,7 @@ class RightWallFollower:
         # open bay) it just means there's nothing there yet, and reflexively
         # turning right in a loop is wrong.
         self.wall_acquired = False
+        self.recent_left = deque(maxlen=5)
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -193,12 +199,22 @@ class RightWallFollower:
             if right < RIGHT_OPEN_CM:
                 self.wall_acquired = True
 
+            # A sharp drop in the left distance is a strong sign we're
+            # swinging around a corner as the right wall opens up. Noisy
+            # right readings alone often don't sustain above RIGHT_OPEN_CM
+            # long enough to confirm a real junction on their own.
+            left_confirms_turn = (
+                len(self.recent_left) == self.recent_left.maxlen
+                and left <= min(self.recent_left) - LEFT_DROP_CM
+            )
+            self.recent_left.append(left)
+
             # Right-hand priority: turn right whenever a real opening persists
             # in a wall we were already following. Before any wall has been
             # found, an open right reading just means there's nothing there
             # yet - drive forward and let the wall-following correction below
             # steer toward the first wall it finds instead of spinning here.
-            if self.wall_acquired and right >= RIGHT_OPEN_CM:
+            if self.wall_acquired and (right >= RIGHT_OPEN_CM or left_confirms_turn):
                 self.right_open_count += 1
             else:
                 self.right_open_count = 0
