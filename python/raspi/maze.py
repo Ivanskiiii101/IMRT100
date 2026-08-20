@@ -18,9 +18,11 @@
 from collections import deque
 import statistics
 import sys
+import threading
 import time
 
 import imrt_robot_serial
+import RPi.GPIO as GPIO
 
 
 # Sensor-number mapping, matching the labels used in
@@ -70,9 +72,79 @@ MAX_PIVOT_CORRECTION_SECONDS = 0.4
 MOTOR_1_SIGN = 1
 MOTOR_2_SIGN = 1
 
+# Piezo buzzer wired straight to a Raspberry Pi GPIO pin (see
+# gpio_tune_player.py) - independent of the Arduino/motor serial link, so
+# playing music doesn't touch anything on the Arduino side.
+BUZZ_PIN = 23
+BUZZ_DUTY = 10
+
+c = [32, 65, 131, 262, 523]
+d = [36, 73, 147, 294, 587]
+e = [41, 82, 165, 330, 659]
+f = [43, 87, 175, 349, 698]
+g = [49, 98, 196, 392, 784]
+a = [55, 110, 220, 440, 880]
+
+WHOLE = 0.8
+HALF = WHOLE / 2
+QUART = WHOLE / 4
+
+# (pitch, duration) pairs - swap this out for any other tune.
+SONG = list(zip(
+    [c[3], d[3], e[3], f[3], g[3], g[3], a[3], a[3],
+     a[3], a[3], g[3], f[3], f[3], f[3], f[3], e[3],
+     e[3], d[3], d[3], d[3], d[3], c[3]],
+    [QUART, QUART, QUART, QUART, HALF, HALF, QUART, QUART,
+     QUART, QUART, WHOLE, QUART, QUART, QUART, QUART, HALF,
+     HALF, QUART, QUART, QUART, QUART, WHOLE],
+))
+
 
 def clamp(value, lower=-500, upper=500):
     return max(lower, min(upper, int(value)))
+
+
+class MusicPlayer:
+    # Plays SONG on loop on a background thread, driving the buzzer with
+    # PWM, so it doesn't block the sensor/motor control loop.
+    def __init__(self, song, pin=BUZZ_PIN):
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        GPIO.setup(pin, GPIO.OUT)
+        self._pwm = GPIO.PWM(pin, 250)
+        self._pwm.start(0)
+        self._song = song
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._play_loop, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join()
+        self._pwm.stop()
+        GPIO.cleanup()
+
+    def _play_loop(self):
+        while not self._stop_event.is_set():
+            for pitch, duration in self._song:
+                if self._stop_event.is_set():
+                    break
+                self._pwm.ChangeDutyCycle(BUZZ_DUTY)
+                self._pwm.ChangeFrequency(pitch)
+                self._interruptible_sleep(duration / 2)
+                self._pwm.ChangeDutyCycle(0)
+                self._interruptible_sleep(duration / 2)
+
+    def _interruptible_sleep(self, duration):
+        # Sleep in small steps so stop() doesn't have to wait out a note.
+        end_time = time.monotonic() + duration
+        while not self._stop_event.is_set():
+            remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.05, remaining))
 
 
 class MazeNavigator:
@@ -240,15 +312,21 @@ class MazeNavigator:
 def main():
     port = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
     robot = imrt_robot_serial.IMRTRobotSerial()
+    music = MusicPlayer(SONG)
 
     try:
         robot.connect(port)
         robot.run()
+        music.start()
         MazeNavigator(robot).run()
     except Exception as error:
         print(f"\nRobot program stopped because of an error: {error}")
         raise
     finally:
+        try:
+            music.stop()
+        except Exception:
+            pass
         # This is best effort: connection failures can happen before a serial
         # port exists, while normal exits should always send an explicit stop.
         if hasattr(robot, "serial_port_"):
