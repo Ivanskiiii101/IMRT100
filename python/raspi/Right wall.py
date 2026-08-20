@@ -22,9 +22,14 @@ TURN_SPEED = 140
 # Initial distance thresholds in centimetres; tune these in the real maze.
 FRONT_STOP_CM = 25
 FRONT_SLOWDOWN_CM = 50
-RIGHT_TARGET_CM = 22
-RIGHT_OPEN_CM = 55
+RIGHT_NEAR_CM = 26     # steer away from the wall below this
+RIGHT_FAR_CM = 60      # steer back toward the wall above this
+RIGHT_OPEN_CM = 90      # sustained reading above this means a real junction
 EXIT_OPEN_CM = 180
+
+# Raw sensor value (0-255) meaning "no echo received." Also happens when an
+# object is closer than the sensor's minimum range - see read_distances().
+SENSOR_NO_ECHO_RAW = 250
 
 # Timing values that must be calibrated with Venusaur mounted.
 CONTROL_PERIOD = 0.10       # 10 Hz; safely inside Arduino's 500 ms timeout
@@ -110,7 +115,7 @@ class RightWallFollower:
         deadline = time.monotonic() + MAX_PIVOT_CORRECTION_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             right = self.read_distances()[SENSOR_RIGHT]
-            if RIGHT_TARGET_CM * 0.5 <= right <= RIGHT_OPEN_CM:
+            if RIGHT_NEAR_CM * 0.5 <= right <= RIGHT_OPEN_CM:
                 return
             self.timed_drive(motor_1, motor_2, PIVOT_CORRECTION_STEP_SECONDS)
             self.stop()
@@ -123,6 +128,16 @@ class RightWallFollower:
             4: self.robot.get_dist_4(),
         }
         for number, value in raw.items():
+            # The sensor reports 255 both for "nothing in range" and for an
+            # object closer than its minimum range (i.e. touching it). If the
+            # last reading was already close, a jump to 255 almost certainly
+            # means the wall is now too close to measure, not that it
+            # vanished - keep treating it as blocked instead of trusting the
+            # raw value.
+            if value >= SENSOR_NO_ECHO_RAW and self.history[number]:
+                previous = statistics.median(self.history[number])
+                if previous < FRONT_SLOWDOWN_CM:
+                    value = 0
             self.history[number].append(value)
         return {
             number: statistics.median(values)
@@ -188,9 +203,16 @@ class RightWallFollower:
             else:
                 forward_speed = FORWARD_SPEED
 
-            # While moving straight, gently correct toward the target distance
-            # from the right wall. This assumes the right sensor sees that wall.
-            error = right - RIGHT_TARGET_CM
+            # While moving straight, only correct once the right distance
+            # drifts outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, instead
+            # of continuously chasing a single exact target. This tolerates
+            # sensor noise inside the band without jittering the motors.
+            if right < RIGHT_NEAR_CM:
+                error = right - RIGHT_NEAR_CM
+            elif right > RIGHT_FAR_CM:
+                error = right - RIGHT_FAR_CM
+            else:
+                error = 0
             correction = clamp(error * 2, -CORRECTION, CORRECTION)
             motor_1 = forward_speed + correction
             motor_2 = forward_speed - correction
