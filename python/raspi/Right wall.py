@@ -18,6 +18,10 @@ SENSOR_BEHIND = 4
 FORWARD_SPEED = 150
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 CORRECTION = 35
+INSIDE_BAND_GAIN = 0.4  # gentle pull toward band centre; much weaker than the
+                         # gain used outside the band, but never exactly zero -
+                         # a hard zero leaves any motor speed mismatch
+                         # completely uncorrected, causing slow heading drift.
 TURN_SPEED = 140
 
 # Initial distance thresholds in centimetres; tune these in the real maze.
@@ -28,10 +32,11 @@ RIGHT_FAR_CM = 60      # steer back toward the wall above this
 RIGHT_OPEN_CM = 70      # sustained reading above this means a real junction
 EXIT_OPEN_CM = 180
 
-# If the left distance drops at least this much from its recent minimum, the
-# robot is very likely swinging around a corner as the right wall opens up -
-# treat that as extra confirmation of a real junction, on top of RIGHT_OPEN_CM.
-LEFT_DROP_CM = 15
+# If the left or centre distance drops at least this much from its recent
+# minimum, the robot has gotten close to a wall on that side - a strong sign
+# it's swinging around a corner as the right wall opens up. Treat that as
+# extra confirmation of a real junction, on top of RIGHT_OPEN_CM.
+WALL_APPROACH_DROP_CM = 15
 
 # Raw sensor value (0-255) meaning "no echo received." Also happens when an
 # object is closer than the sensor's minimum range - see read_distances().
@@ -39,7 +44,11 @@ SENSOR_NO_ECHO_RAW = 250
 
 # Timing values that must be calibrated with Venusaur mounted.
 CONTROL_PERIOD = 0.10       # 10 Hz; safely inside Arduino's 500 ms timeout
-TURN_90_SECONDS = 0.85
+TURN_90_SECONDS = 0.85       # used for the dead-end recovery turn
+# Junction turns get their own duration - tune this separately from
+# TURN_90_SECONDS. E.g. if TURN_90_SECONDS is calibrated to a real 90 degrees
+# and a junction turn should be shallower, try TURN_90_SECONDS * (55 / 90).
+RIGHT_TURN_SECONDS = 0.85
 JUNCTION_ADVANCE_SECONDS = 0.25
 POST_TURN_ADVANCE_SECONDS = 0.35
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
@@ -79,6 +88,7 @@ class RightWallFollower:
         # turning right in a loop is wrong.
         self.wall_acquired = False
         self.recent_left = deque(maxlen=5)
+        self.recent_centre = deque(maxlen=5)
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -104,7 +114,7 @@ class RightWallFollower:
         # Move the wheel axle toward the centre of the junction before pivoting.
         self.timed_drive(FORWARD_SPEED, FORWARD_SPEED,
                          JUNCTION_ADVANCE_SECONDS)
-        self._pivot(TURN_SPEED, -TURN_SPEED)
+        self._pivot(TURN_SPEED, -TURN_SPEED, RIGHT_TURN_SECONDS)
         # At an outside corner, the right sensor often still sees no wall
         # immediately after pivoting (nothing there yet), which would
         # otherwise re-trigger another right turn on the very next reading -
@@ -125,8 +135,8 @@ class RightWallFollower:
             self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, BACKUP_SECONDS)
         self.turn_left()
 
-    def _pivot(self, motor_1, motor_2):
-        self.timed_drive(motor_1, motor_2, TURN_90_SECONDS)
+    def _pivot(self, motor_1, motor_2, duration=TURN_90_SECONDS):
+        self.timed_drive(motor_1, motor_2, duration)
         self.stop()
 
         # The fixed duration above is only an estimate; verify the right
@@ -199,22 +209,31 @@ class RightWallFollower:
             if right < RIGHT_OPEN_CM:
                 self.wall_acquired = True
 
-            # A sharp drop in the left distance is a strong sign we're
-            # swinging around a corner as the right wall opens up. Noisy
-            # right readings alone often don't sustain above RIGHT_OPEN_CM
-            # long enough to confirm a real junction on their own.
+            # A sharp drop in the left or centre distance is a strong sign
+            # we're swinging around a corner as the right wall opens up.
+            # Noisy right readings alone often don't sustain above
+            # RIGHT_OPEN_CM long enough to confirm a real junction on their
+            # own, so use these as corroborating evidence.
             left_confirms_turn = (
                 len(self.recent_left) == self.recent_left.maxlen
-                and left <= min(self.recent_left) - LEFT_DROP_CM
+                and left <= min(self.recent_left) - WALL_APPROACH_DROP_CM
+            )
+            centre_confirms_turn = (
+                len(self.recent_centre) == self.recent_centre.maxlen
+                and centre <= min(self.recent_centre) - WALL_APPROACH_DROP_CM
             )
             self.recent_left.append(left)
+            self.recent_centre.append(centre)
 
             # Right-hand priority: turn right whenever a real opening persists
             # in a wall we were already following. Before any wall has been
             # found, an open right reading just means there's nothing there
             # yet - drive forward and let the wall-following correction below
             # steer toward the first wall it finds instead of spinning here.
-            if self.wall_acquired and (right >= RIGHT_OPEN_CM or left_confirms_turn):
+            right_looks_open = right >= RIGHT_OPEN_CM
+            if self.wall_acquired and (
+                right_looks_open or left_confirms_turn or centre_confirms_turn
+            ):
                 self.right_open_count += 1
             else:
                 self.right_open_count = 0
@@ -248,17 +267,20 @@ class RightWallFollower:
             else:
                 forward_speed = FORWARD_SPEED
 
-            # While moving straight, only correct once the right distance
-            # drifts outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, instead
-            # of continuously chasing a single exact target. This tolerates
-            # sensor noise inside the band without jittering the motors.
+            # Outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, correct firmly.
+            # Inside it, still pull gently toward the band centre rather than
+            # applying zero correction - a hard zero would leave any inherent
+            # motor speed mismatch to accumulate into an uncorrected drift.
             if right < RIGHT_NEAR_CM:
                 error = right - RIGHT_NEAR_CM
+                gain = 2
             elif right > RIGHT_FAR_CM:
                 error = right - RIGHT_FAR_CM
+                gain = 2
             else:
-                error = 0
-            correction = clamp(error * 2, -CORRECTION, CORRECTION)
+                error = right - (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
+                gain = INSIDE_BAND_GAIN
+            correction = clamp(error * gain, -CORRECTION, CORRECTION)
             motor_1 = forward_speed + correction
             motor_2 = forward_speed - correction
             self.send(motor_1, motor_2)
