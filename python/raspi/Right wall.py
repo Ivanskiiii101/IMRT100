@@ -36,6 +36,7 @@ SENSOR_NO_ECHO_RAW = 250
 CONTROL_PERIOD = 0.10       # 10 Hz; safely inside Arduino's 500 ms timeout
 TURN_90_SECONDS = 0.85
 JUNCTION_ADVANCE_SECONDS = 0.25
+POST_TURN_ADVANCE_SECONDS = 0.35
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 OPEN_CONFIRM_SAMPLES = 3
 
@@ -93,6 +94,13 @@ class RightWallFollower:
         self.timed_drive(FORWARD_SPEED, FORWARD_SPEED,
                          JUNCTION_ADVANCE_SECONDS)
         self._pivot(TURN_SPEED, -TURN_SPEED)
+        # At an outside corner, the right sensor often still sees no wall
+        # immediately after pivoting (nothing there yet), which would
+        # otherwise re-trigger another right turn on the very next reading -
+        # several in a row is a full spin in place. Advance into the new
+        # corridor first so the right sensor gets a chance to find its wall.
+        self.timed_drive(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED,
+                         POST_TURN_ADVANCE_SECONDS)
 
     def turn_left(self):
         self.stop()
