@@ -68,6 +68,11 @@ class RightWallFollower:
         self.history = {number: deque(maxlen=3) for number in (1, 2, 3, 4)}
         self.right_open_count = 0
         self.exit_open_count = 0
+        # A "right is open" reading only means a junction if we were already
+        # hugging a wall. Before the first wall contact (e.g. starting in an
+        # open bay) it just means there's nothing there yet, and reflexively
+        # turning right in a loop is wrong.
+        self.wall_acquired = False
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -183,8 +188,17 @@ class RightWallFollower:
                 print("\nOpen finish area detected; robot stopped.")
                 return
 
-            # Right-hand priority: turn right whenever a real opening persists.
-            if right >= RIGHT_OPEN_CM:
+            # Track whether we've actually made contact with a wall yet.
+            # Only a wall we were following can "open up" into a junction.
+            if right < RIGHT_OPEN_CM:
+                self.wall_acquired = True
+
+            # Right-hand priority: turn right whenever a real opening persists
+            # in a wall we were already following. Before any wall has been
+            # found, an open right reading just means there's nothing there
+            # yet - drive forward and let the wall-following correction below
+            # steer toward the first wall it finds instead of spinning here.
+            if self.wall_acquired and right >= RIGHT_OPEN_CM:
                 self.right_open_count += 1
             else:
                 self.right_open_count = 0
