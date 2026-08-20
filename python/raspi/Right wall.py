@@ -21,6 +21,7 @@ TURN_SPEED = 140
 
 # Initial distance thresholds in centimetres; tune these in the real maze.
 FRONT_STOP_CM = 25
+FRONT_SLOWDOWN_CM = 50
 RIGHT_TARGET_CM = 22
 RIGHT_OPEN_CM = 55
 EXIT_OPEN_CM = 180
@@ -175,12 +176,24 @@ class RightWallFollower:
                 self.dead_end_turn(behind)
                 continue
 
+            # Slow down smoothly as the front wall approaches instead of
+            # driving at full speed right up to FRONT_STOP_CM. Without this,
+            # the robot only reacts once it is already within FRONT_STOP_CM,
+            # by which point momentum can carry it into the wall.
+            if centre < FRONT_SLOWDOWN_CM:
+                speed_scale = (centre - FRONT_STOP_CM) / (
+                    FRONT_SLOWDOWN_CM - FRONT_STOP_CM
+                )
+                forward_speed = FORWARD_SPEED * max(0.0, min(1.0, speed_scale))
+            else:
+                forward_speed = FORWARD_SPEED
+
             # While moving straight, gently correct toward the target distance
             # from the right wall. This assumes the right sensor sees that wall.
             error = right - RIGHT_TARGET_CM
             correction = clamp(error * 2, -CORRECTION, CORRECTION)
-            motor_1 = FORWARD_SPEED + correction
-            motor_2 = FORWARD_SPEED - correction
+            motor_1 = forward_speed + correction
+            motor_2 = forward_speed - correction
             self.send(motor_1, motor_2)
 
             remaining = CONTROL_PERIOD - (time.monotonic() - started)
