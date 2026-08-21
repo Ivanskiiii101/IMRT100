@@ -43,9 +43,9 @@ STEER_GAIN = 2.5
 MAX_STEER_CORRECTION = 45
 
 # Distance thresholds in centimetres; tune these in the real maze.
-FRONT_STOP_CM = 18      # lower = drives closer to the front wall before turning
-FRONT_SLOWDOWN_CM = 55   # widened again since higher FORWARD_SPEED needs more
-                         # braking distance to actually slow down in time
+FRONT_STOP_CM = 28      # raised from 18 - it was reacting too late, driving
+                         # in too close before triggering the blocked/turn logic
+FRONT_SLOWDOWN_CM = 65   # raised to match - starts braking earlier too
 SIDE_TOO_CLOSE_CM = 25    # steer away if only one wall is this close - raised
                          # so it reacts sooner now that the robot covers more
                          # ground per control-loop tick at the higher speed
