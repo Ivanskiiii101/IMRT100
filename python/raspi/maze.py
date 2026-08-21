@@ -162,7 +162,11 @@ class MusicPlayer:
 class MazeNavigator:
     def __init__(self, robot):
         self.robot = robot
-        self.history = {number: deque(maxlen=3) for number in (1, 2, 3, 4)}
+        # maxlen=5: with sensors mounted close together, one can occasionally
+        # pick up a neighbour's echo (crosstalk) and report a bogus close
+        # reading for a tick or two. A wider median window needs more than
+        # one or two bad-in-a-row samples to actually move the result.
+        self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
         # Counts consecutive blocked-and-turn events with no forward driving
         # in between - see handle_blocked().
