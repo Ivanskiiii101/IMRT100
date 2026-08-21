@@ -68,7 +68,8 @@ CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
                              # covered per tick at the higher FORWARD_SPEED.
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
-SIDE_AVOID_BACKUP_SECONDS = 0.15
+SIDE_AVOID_BACKUP_SECONDS = 0.10  # timed_drive resends every 0.05s, so this
+                                   # is 2 backward pulses instead of 3
 SIDE_AVOID_TURN_SECONDS = 0.15
 
 # A side sensor is most likely to miss a wall at a glancing angle right
