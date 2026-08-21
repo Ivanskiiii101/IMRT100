@@ -79,6 +79,12 @@ TURN_COOLDOWN_SECONDS = 1.0
 TURN_COOLDOWN_SPEED = MIN_FORWARD_SPEED + 30
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 
+# Require a couple of consecutive close readings before treating the front
+# as genuinely blocked, not just one. A single noisy reading (most likely in
+# open space, where there's nothing nearby to actually be causing it) can
+# otherwise trigger a stop-and-turn that shouldn't have happened.
+FRONT_BLOCK_CONFIRM_SAMPLES = 2
+
 # turn() rotates in small increments and checks the front after each one,
 # instead of committing to a fixed duration for a specific angle. This lets
 # it handle corners that aren't 90 degrees - it just keeps turning until the
@@ -183,6 +189,7 @@ class MazeNavigator:
         # one or two bad-in-a-row samples to actually move the result.
         self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
+        self.front_blocked_count = 0
         # Counts consecutive blocked-and-turn events with no forward driving
         # in between - see handle_blocked().
         self.consecutive_blocked = 0
@@ -332,6 +339,12 @@ class MazeNavigator:
                 return
 
             if centre <= FRONT_STOP_CM:
+                self.front_blocked_count += 1
+            else:
+                self.front_blocked_count = 0
+
+            if self.front_blocked_count >= FRONT_BLOCK_CONFIRM_SAMPLES:
+                self.front_blocked_count = 0
                 self.handle_blocked()
                 continue
 
