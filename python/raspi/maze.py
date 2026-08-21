@@ -34,7 +34,7 @@ SENSOR_CENTRE = 3
 SENSOR_BEHIND = 4
 
 # Motor commands. The Arduino accepts -500 to +500.
-FORWARD_SPEED = 190
+FORWARD_SPEED = 220
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 TURN_SPEED = 140
 BACKUP_SPEED = 120
@@ -43,9 +43,11 @@ MAX_STEER_CORRECTION = 45
 
 # Distance thresholds in centimetres; tune these in the real maze.
 FRONT_STOP_CM = 18      # lower = drives closer to the front wall before turning
-FRONT_SLOWDOWN_CM = 48   # widened a bit since higher FORWARD_SPEED needs more
+FRONT_SLOWDOWN_CM = 55   # widened again since higher FORWARD_SPEED needs more
                          # braking distance to actually slow down in time
-SIDE_TOO_CLOSE_CM = 20    # steer away if only one wall is this close
+SIDE_TOO_CLOSE_CM = 25    # steer away if only one wall is this close - raised
+                         # so it reacts sooner now that the robot covers more
+                         # ground per control-loop tick at the higher speed
 CORRIDOR_SENSE_CM = 80    # ignore side readings farther than this for centring
 EXIT_OPEN_CM = 180
 REAR_CLEARANCE_CM = 15
@@ -55,7 +57,9 @@ REAR_CLEARANCE_CM = 15
 SENSOR_NO_ECHO_RAW = 250
 
 # Timing values that must be calibrated with Venusaur mounted.
-CONTROL_PERIOD = 0.10       # 10 Hz; safely inside Arduino's 500 ms timeout
+CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
+                             # Tighter than 0.10 since more distance is
+                             # covered per tick at the higher FORWARD_SPEED.
 TURN_SECONDS = 0.85
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
@@ -65,7 +69,7 @@ EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 # blocked, instead of trusting the fixed timing alone (motor speed drifts
 # with battery voltage and floor friction).
 PIVOT_CORRECTION_STEP_SECONDS = 0.08
-MAX_PIVOT_CORRECTION_SECONDS = 0.7
+MAX_PIVOT_CORRECTION_SECONDS = 0.4
 
 # Change either sign if a positive command drives that motor backwards.
 # Confirmed correct (motor_1=left, motor_2=right, positive=forward) with
@@ -178,15 +182,12 @@ class MazeNavigator:
         self.stop()
 
         # The fixed duration above is only an estimate; verify the front is
-        # clearly open now (not just barely past FRONT_STOP_CM) and, if not,
-        # keep rotating in short bursts rather than trusting the timing
-        # alone. A weak "not touching the wall" check can let the turn stop
-        # while still angled into the corner rather than down the corridor,
-        # which then clips a side wall right after.
+        # actually clear now and, if not, keep rotating in short bursts
+        # rather than trusting the timing alone.
         deadline = time.monotonic() + MAX_PIVOT_CORRECTION_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             centre = self.read_distances()[SENSOR_CENTRE]
-            if centre > FRONT_SLOWDOWN_CM:
+            if centre > FRONT_STOP_CM:
                 break
             self.timed_drive(motor_1, motor_2, PIVOT_CORRECTION_STEP_SECONDS)
             self.stop()
