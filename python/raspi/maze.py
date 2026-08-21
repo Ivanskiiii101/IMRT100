@@ -220,11 +220,16 @@ class MazeNavigator:
                          POST_TURN_ADVANCE_SECONDS)
         self.turn_cooldown_until = time.monotonic() + TURN_COOLDOWN_SECONDS
 
-    def back_up_to_wall(self):
-        # Back up until the rear sensor says a wall is close behind, instead
-        # of a short fixed nudge, so there's real room to turn in a tight
-        # pocket - capped at MAX_ESCAPE_BACKUP_SECONDS for safety.
-        deadline = time.monotonic() + MAX_ESCAPE_BACKUP_SECONDS
+    def back_up_to_wall(self, max_duration):
+        # Back up while continuously checking the rear sensor, instead of a
+        # single check-then-commit-to-a-fixed-duration drive. If there's
+        # room, it backs up until the rear sensor says a wall is actually
+        # close; if there isn't, it does nothing rather than reversing
+        # blind. Side sensors can't be trusted to catch a collision mid-turn
+        # (they scan the wall at a constantly-changing angle while spinning,
+        # and can miss it entirely), so real clearance has to come from
+        # here, before the turn starts, not from watching the sides during it.
+        deadline = time.monotonic() + max_duration
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             behind = self.read_distances()[SENSOR_BEHIND]
             if behind < REAR_CLEARANCE_CM:
@@ -233,22 +238,18 @@ class MazeNavigator:
             time.sleep(0.05)
         self.stop()
 
-    def handle_blocked(self, left, right, behind):
+    def handle_blocked(self):
         self.stop()
         self.consecutive_blocked += 1
 
-        if behind >= REAR_CLEARANCE_CM:
-            if self.consecutive_blocked >= STUCK_TURN_THRESHOLD:
-                # Turning in place repeatedly without ever driving forward
-                # again means it's boxed into a pocket, not a normal dead
-                # end - a short nudge isn't enough to get clear of it.
-                print("\nStuck in a pocket - backing up further to escape.")
-                self.back_up_to_wall()
-            else:
-                self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, BACKUP_SECONDS)
-            distances = self.read_distances()
-            left = distances[SENSOR_LEFT]
-            right = distances[SENSOR_RIGHT]
+        if self.consecutive_blocked >= STUCK_TURN_THRESHOLD:
+            print("\nStuck in a pocket - backing up further to escape.")
+            self.back_up_to_wall(MAX_ESCAPE_BACKUP_SECONDS)
+        else:
+            self.back_up_to_wall(BACKUP_SECONDS)
+        distances = self.read_distances()
+        left = distances[SENSOR_LEFT]
+        right = distances[SENSOR_RIGHT]
 
         # Turn toward whichever side currently looks more open.
         if right >= left:
@@ -311,7 +312,7 @@ class MazeNavigator:
                 return
 
             if centre <= FRONT_STOP_CM:
-                self.handle_blocked(left, right, behind)
+                self.handle_blocked()
                 continue
 
             # Made it back to normal forward driving - no longer stuck.
