@@ -65,7 +65,7 @@ EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 # blocked, instead of trusting the fixed timing alone (motor speed drifts
 # with battery voltage and floor friction).
 PIVOT_CORRECTION_STEP_SECONDS = 0.08
-MAX_PIVOT_CORRECTION_SECONDS = 0.4
+MAX_PIVOT_CORRECTION_SECONDS = 0.7
 
 # Change either sign if a positive command drives that motor backwards.
 # Confirmed correct (motor_1=left, motor_2=right, positive=forward) with
@@ -178,12 +178,15 @@ class MazeNavigator:
         self.stop()
 
         # The fixed duration above is only an estimate; verify the front is
-        # actually clear now and, if not, keep rotating in short bursts
-        # rather than trusting the timing alone.
+        # clearly open now (not just barely past FRONT_STOP_CM) and, if not,
+        # keep rotating in short bursts rather than trusting the timing
+        # alone. A weak "not touching the wall" check can let the turn stop
+        # while still angled into the corner rather than down the corridor,
+        # which then clips a side wall right after.
         deadline = time.monotonic() + MAX_PIVOT_CORRECTION_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             centre = self.read_distances()[SENSOR_CENTRE]
-            if centre > FRONT_STOP_CM:
+            if centre > FRONT_SLOWDOWN_CM:
                 break
             self.timed_drive(motor_1, motor_2, PIVOT_CORRECTION_STEP_SECONDS)
             self.stop()
