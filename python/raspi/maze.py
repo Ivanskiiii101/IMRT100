@@ -50,6 +50,11 @@ SIDE_TOO_CLOSE_CM = 25    # steer away if only one wall is this close - raised
                          # so it reacts sooner now that the robot covers more
                          # ground per control-loop tick at the higher speed
 CORRIDOR_SENSE_CM = 80    # ignore side readings farther than this for centring
+# Gentle steering correction alone can't always avoid a wall that's already
+# this close - it's a shallow arc while still moving forward, not an
+# emergency response. Below this, stop and physically move away instead of
+# just steering while still driving toward it.
+SIDE_STOP_CM = 10
 EXIT_OPEN_CM = 180
 REAR_CLEARANCE_CM = 15
 
@@ -63,6 +68,8 @@ CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
                              # covered per tick at the higher FORWARD_SPEED.
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
+SIDE_AVOID_BACKUP_SECONDS = 0.15
+SIDE_AVOID_TURN_SECONDS = 0.15
 
 # A side sensor is most likely to miss a wall at a glancing angle right
 # after a turn, before the centring correction has had time to straighten
@@ -239,6 +246,18 @@ class MazeNavigator:
             time.sleep(0.05)
         self.stop()
 
+    def avoid_side_wall(self, close_sensor):
+        # A side wall this close needs a real stop-and-move-away response,
+        # not just a steering nudge while still driving toward it. Back
+        # straight off it a little, then nudge away before resuming.
+        self.stop()
+        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
+        if close_sensor == SENSOR_LEFT:
+            self.timed_drive(TURN_SPEED, -TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
+        else:
+            self.timed_drive(-TURN_SPEED, TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
+        self.stop()
+
     def handle_blocked(self):
         self.stop()
         self.consecutive_blocked += 1
@@ -314,6 +333,11 @@ class MazeNavigator:
 
             if centre <= FRONT_STOP_CM:
                 self.handle_blocked()
+                continue
+
+            if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
+                close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
+                self.avoid_side_wall(close_sensor)
                 continue
 
             # Made it back to normal forward driving - no longer stuck.
