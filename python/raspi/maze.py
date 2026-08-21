@@ -42,8 +42,8 @@ STEER_GAIN = 2
 MAX_STEER_CORRECTION = 35
 
 # Distance thresholds in centimetres; tune these in the real maze.
-FRONT_STOP_CM = 25
-FRONT_SLOWDOWN_CM = 50
+FRONT_STOP_CM = 18      # lower = drives closer to the front wall before turning
+FRONT_SLOWDOWN_CM = 40
 SIDE_TOO_CLOSE_CM = 15    # steer away if only one wall is this close
 CORRIDOR_SENSE_CM = 80    # ignore side readings farther than this for centring
 EXIT_OPEN_CM = 180
