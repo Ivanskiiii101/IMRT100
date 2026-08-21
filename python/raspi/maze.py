@@ -34,7 +34,8 @@ SENSOR_CENTRE = 3
 SENSOR_BEHIND = 4
 
 # Motor commands. The Arduino accepts -500 to +500.
-FORWARD_SPEED = 220
+FORWARD_SPEED = 191  # was 220, cut 13% to test if speed itself was causing
+                     # missed readings / turn collisions
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 TURN_SPEED = 140
 BACKUP_SPEED = 120
