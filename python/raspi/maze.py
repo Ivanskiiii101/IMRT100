@@ -34,17 +34,18 @@ SENSOR_CENTRE = 3
 SENSOR_BEHIND = 4
 
 # Motor commands. The Arduino accepts -500 to +500.
-FORWARD_SPEED = 150
+FORWARD_SPEED = 190
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 TURN_SPEED = 140
 BACKUP_SPEED = 120
-STEER_GAIN = 2
-MAX_STEER_CORRECTION = 35
+STEER_GAIN = 2.5
+MAX_STEER_CORRECTION = 45
 
 # Distance thresholds in centimetres; tune these in the real maze.
 FRONT_STOP_CM = 18      # lower = drives closer to the front wall before turning
-FRONT_SLOWDOWN_CM = 40
-SIDE_TOO_CLOSE_CM = 15    # steer away if only one wall is this close
+FRONT_SLOWDOWN_CM = 48   # widened a bit since higher FORWARD_SPEED needs more
+                         # braking distance to actually slow down in time
+SIDE_TOO_CLOSE_CM = 20    # steer away if only one wall is this close
 CORRIDOR_SENSE_CM = 80    # ignore side readings farther than this for centring
 EXIT_OPEN_CM = 180
 REAR_CLEARANCE_CM = 15
