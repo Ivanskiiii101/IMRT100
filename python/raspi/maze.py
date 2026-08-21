@@ -79,6 +79,10 @@ SIDE_AVOID_TURN_SECONDS = 0.15
 TURN_COOLDOWN_SECONDS = 1.0
 TURN_COOLDOWN_SPEED = MIN_FORWARD_SPEED + 30
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
+# A spacious starting bay can read just as open as the real finish area on
+# every sensor - ignore exit detection for this long after starting, so the
+# robot actually gets moving into the maze before it's ever checked.
+START_GRACE_SECONDS = 5.0
 
 # Require a couple of consecutive close readings before treating the front
 # as genuinely blocked, not just one. A single noisy reading (most likely in
@@ -338,6 +342,7 @@ class MazeNavigator:
 
     def run(self):
         print("Maze navigator running. Press Ctrl+C to stop.")
+        started_at = time.monotonic()
 
         while not self.robot.shutdown_now:
             started = time.monotonic()
@@ -361,7 +366,10 @@ class MazeNavigator:
             else:
                 self.exit_open_count = 0
 
-            if self.exit_open_count >= EXIT_CONFIRM_SAMPLES:
+            past_start_grace = (
+                time.monotonic() - started_at >= START_GRACE_SECONDS
+            )
+            if past_start_grace and self.exit_open_count >= EXIT_CONFIRM_SAMPLES:
                 self.stop()
                 print("\nOpen finish area detected; robot stopped.")
                 return
@@ -436,21 +444,29 @@ class MazeNavigator:
 def main():
     port = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
     robot = imrt_robot_serial.IMRTRobotSerial()
-    music = MusicPlayer(SONG)
+    music = None
 
     try:
         robot.connect(port)
         robot.run()
-        music.start()
+        try:
+            # Music is a nice-to-have; a buzzer/GPIO problem (e.g. needing
+            # to run with sudo) must never stop the robot from driving.
+            music = MusicPlayer(SONG)
+            music.start()
+        except Exception as music_error:
+            print(f"\nMusic unavailable ({music_error}); driving without it.")
+            music = None
         MazeNavigator(robot).run()
     except Exception as error:
         print(f"\nRobot program stopped because of an error: {error}")
         raise
     finally:
-        try:
-            music.stop()
-        except Exception:
-            pass
+        if music is not None:
+            try:
+                music.stop()
+            except Exception:
+                pass
         # This is best effort: connection failures can happen before a serial
         # port exists, while normal exits should always send an explicit stop.
         if hasattr(robot, "serial_port_"):
