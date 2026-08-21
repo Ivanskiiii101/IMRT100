@@ -237,8 +237,19 @@ class MazeNavigator:
                 break
         self.stop()
 
-        self.timed_drive(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED,
-                         POST_TURN_ADVANCE_SECONDS)
+        # Ease forward, but keep checking the front the whole time. The
+        # rotation above can end up here either because it found a clear
+        # front, or because it simply ran out of MAX_TURN_SECONDS without
+        # ever confirming clear - and even a "clear" reading can be
+        # marginal. Don't drive this blind into whatever might still be there.
+        advance_deadline = time.monotonic() + POST_TURN_ADVANCE_SECONDS
+        while time.monotonic() < advance_deadline and not self.robot.shutdown_now:
+            centre = self.read_distances()[SENSOR_CENTRE]
+            if centre <= FRONT_STOP_CM:
+                break
+            self.send(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED)
+            time.sleep(0.05)
+        self.stop()
         self.turn_cooldown_until = time.monotonic() + TURN_COOLDOWN_SECONDS
 
     def back_up_to_wall(self, max_duration):
