@@ -60,16 +60,23 @@ SENSOR_NO_ECHO_RAW = 250
 CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
                              # Tighter than 0.10 since more distance is
                              # covered per tick at the higher FORWARD_SPEED.
-TURN_SECONDS = 0.85
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 
-# After the timed pivot, keep nudging in short bursts if the front is still
-# blocked, instead of trusting the fixed timing alone (motor speed drifts
-# with battery voltage and floor friction).
-PIVOT_CORRECTION_STEP_SECONDS = 0.08
-MAX_PIVOT_CORRECTION_SECONDS = 0.4
+# turn() rotates in small increments and checks the front after each one,
+# instead of committing to a fixed duration for a specific angle. This lets
+# it handle corners that aren't 90 degrees - it just keeps turning until the
+# front is actually clear rather than assuming how far that takes.
+# MAX_TURN_SECONDS is only a safety cap (covers roughly a full 180 degrees).
+TURN_STEP_SECONDS = 0.05
+MAX_TURN_SECONDS = 1.7
+
+# If the robot has to turn again multiple times in a row without ever
+# driving forward in between, a short nudge back isn't enough to escape a
+# tight pocket - back up further, toward the rear wall, to get real room.
+STUCK_TURN_THRESHOLD = 2
+MAX_ESCAPE_BACKUP_SECONDS = 1.0
 
 # Change either sign if a positive command drives that motor backwards.
 # Confirmed correct (motor_1=left, motor_2=right, positive=forward) with
@@ -157,6 +164,9 @@ class MazeNavigator:
         self.robot = robot
         self.history = {number: deque(maxlen=3) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
+        # Counts consecutive blocked-and-turn events with no forward driving
+        # in between - see handle_blocked().
+        self.consecutive_blocked = 0
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -178,29 +188,49 @@ class MazeNavigator:
             time.sleep(0.05)
 
     def turn(self, motor_1, motor_2):
-        self.timed_drive(motor_1, motor_2, TURN_SECONDS)
-        self.stop()
-
-        # The fixed duration above is only an estimate; verify the front is
-        # actually clear now and, if not, keep rotating in short bursts
-        # rather than trusting the timing alone.
-        deadline = time.monotonic() + MAX_PIVOT_CORRECTION_SECONDS
+        # Rotate in small increments, checking the front after each one,
+        # instead of committing to a fixed duration for a specific angle.
+        # This naturally handles corners that aren't 90 degrees - it just
+        # keeps turning until the front is actually clear, whatever angle
+        # that takes, up to the MAX_TURN_SECONDS safety cap.
+        deadline = time.monotonic() + MAX_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
+            self.send(motor_1, motor_2)
+            time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
             if centre > FRONT_STOP_CM:
                 break
-            self.timed_drive(motor_1, motor_2, PIVOT_CORRECTION_STEP_SECONDS)
-            self.stop()
+        self.stop()
 
         self.timed_drive(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED,
                          POST_TURN_ADVANCE_SECONDS)
 
+    def back_up_to_wall(self):
+        # Back up until the rear sensor says a wall is close behind, instead
+        # of a short fixed nudge, so there's real room to turn in a tight
+        # pocket - capped at MAX_ESCAPE_BACKUP_SECONDS for safety.
+        deadline = time.monotonic() + MAX_ESCAPE_BACKUP_SECONDS
+        while time.monotonic() < deadline and not self.robot.shutdown_now:
+            behind = self.read_distances()[SENSOR_BEHIND]
+            if behind < REAR_CLEARANCE_CM:
+                break
+            self.send(-BACKUP_SPEED, -BACKUP_SPEED)
+            time.sleep(0.05)
+        self.stop()
+
     def handle_blocked(self, left, right, behind):
         self.stop()
-        # Only back up if the rear sensor confirms there's room; otherwise
-        # pivot in place as before.
+        self.consecutive_blocked += 1
+
         if behind >= REAR_CLEARANCE_CM:
-            self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, BACKUP_SECONDS)
+            if self.consecutive_blocked >= STUCK_TURN_THRESHOLD:
+                # Turning in place repeatedly without ever driving forward
+                # again means it's boxed into a pocket, not a normal dead
+                # end - a short nudge isn't enough to get clear of it.
+                print("\nStuck in a pocket - backing up further to escape.")
+                self.back_up_to_wall()
+            else:
+                self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, BACKUP_SECONDS)
             distances = self.read_distances()
             left = distances[SENSOR_LEFT]
             right = distances[SENSOR_RIGHT]
@@ -268,6 +298,9 @@ class MazeNavigator:
             if centre <= FRONT_STOP_CM:
                 self.handle_blocked(left, right, behind)
                 continue
+
+            # Made it back to normal forward driving - no longer stuck.
+            self.consecutive_blocked = 0
 
             # Slow down smoothly as the front wall approaches instead of
             # driving at full speed right up to FRONT_STOP_CM. Without this,
