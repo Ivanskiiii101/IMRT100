@@ -95,22 +95,8 @@ FRONT_BLOCK_CONFIRM_SAMPLES = 2
 # it handle corners that aren't 90 degrees - it just keeps turning until the
 # front is actually clear rather than assuming how far that takes.
 # MAX_TURN_SECONDS is only a safety cap (covers roughly a full 180 degrees).
-# When the reverse-fallback below kicks in, it needs enough of this budget
-# to first undo SINGLE_TURN_BUDGET_SECONDS of wrong rotation and then still
-# complete a normal turn in the correct direction - so this must be
-# comfortably more than 2x that, or the fallback can run out of time
-# mid-correction and leave the robot facing a direction that isn't clear,
-# which just triggers another turn immediately after.
 TURN_STEP_SECONDS = 0.05
-MAX_TURN_SECONDS = 2.2
-
-# Which way to turn is decided from a single left-vs-right comparison right
-# at the corner - exactly where those readings are least reliable (oblique
-# angles). SINGLE_TURN_BUDGET_SECONDS is roughly how long a normal ~90
-# degree turn should take; if the chosen direction hasn't found a clear
-# front by then, that's a strong sign it picked the wrong way - reverse and
-# try the other direction instead of continuing to spin the long way around.
-SINGLE_TURN_BUDGET_SECONDS = 0.9
+MAX_TURN_SECONDS = 1.7
 
 # If the robot has to turn again multiple times in a row without ever
 # driving forward in between, a short nudge back isn't enough to escape a
@@ -235,32 +221,19 @@ class MazeNavigator:
             self.send(motor_1, motor_2)
             time.sleep(0.05)
 
-    def rotate_until_clear(self, motor_1, motor_2, duration):
+    def turn(self, motor_1, motor_2):
         # Rotate in small increments, checking the front after each one,
         # instead of committing to a fixed duration for a specific angle.
         # This naturally handles corners that aren't 90 degrees - it just
         # keeps turning until the front is actually clear, whatever angle
-        # that takes, up to the given duration. Returns whether it cleared.
-        deadline = time.monotonic() + duration
+        # that takes, up to the MAX_TURN_SECONDS safety cap.
+        deadline = time.monotonic() + MAX_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             self.send(motor_1, motor_2)
             time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
             if centre > FRONT_STOP_CM:
-                return True
-        return False
-
-    def turn(self, motor_1, motor_2):
-        cleared = self.rotate_until_clear(motor_1, motor_2,
-                                          SINGLE_TURN_BUDGET_SECONDS)
-        if not cleared:
-            # A normal turn's worth of rotation didn't find a clear front -
-            # the direction was likely picked wrong from a noisy left/right
-            # reading at the corner. Reverse (this first undoes the wrong
-            # turn, then continues into the actual other direction) instead
-            # of continuing to spin the long way around.
-            print("\nTurn didn't clear - trying the other direction.")
-            self.rotate_until_clear(-motor_1, -motor_2, MAX_TURN_SECONDS)
+                break
         self.stop()
 
         self.timed_drive(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED,
