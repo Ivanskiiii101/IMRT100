@@ -34,8 +34,8 @@ SENSOR_CENTRE = 3
 SENSOR_BEHIND = 4
 
 # Motor commands. The Arduino accepts -500 to +500.
-FORWARD_SPEED = 150  # was 220, cut 13% to test if speed itself was causing
-                     # missed readings / turn collisions
+FORWARD_SPEED = 135  # was 150, cut another 10% - stopping was too slow and
+                     # getting too close to the wall
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 TURN_SPEED = 140
 BACKUP_SPEED = 120
@@ -43,9 +43,10 @@ STEER_GAIN = 2.5
 MAX_STEER_CORRECTION = 45
 
 # Distance thresholds in centimetres; tune these in the real maze.
-FRONT_STOP_CM = 28      # raised from 18 - it was reacting too late, driving
-                         # in too close before triggering the blocked/turn logic
-FRONT_SLOWDOWN_CM = 65   # raised to match - starts braking earlier too
+FRONT_STOP_CM = 35      # raised from 28 - triggers the stop/turn sooner,
+                         # more margin before actually reaching the wall
+FRONT_SLOWDOWN_CM = 80   # raised to match - braking starts earlier and more
+                         # gradually, instead of a late, abrupt slowdown
 SIDE_TOO_CLOSE_CM = 25    # steer away if only one wall is this close - raised
                          # so it reacts sooner now that the robot covers more
                          # ground per control-loop tick at the higher speed
