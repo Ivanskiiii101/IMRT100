@@ -62,6 +62,13 @@ CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
                              # covered per tick at the higher FORWARD_SPEED.
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
+
+# A side sensor is most likely to miss a wall at a glancing angle right
+# after a turn, before the centring correction has had time to straighten
+# the heading out. Cap speed for a bit after every turn so that correction
+# gets more time/distance to work before trusting full speed again.
+TURN_COOLDOWN_SECONDS = 1.0
+TURN_COOLDOWN_SPEED = MIN_FORWARD_SPEED + 30
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 
 # turn() rotates in small increments and checks the front after each one,
@@ -171,6 +178,9 @@ class MazeNavigator:
         # Counts consecutive blocked-and-turn events with no forward driving
         # in between - see handle_blocked().
         self.consecutive_blocked = 0
+        # monotonic() timestamp until which forward speed stays capped after
+        # a turn - see turn() and the speed calculation in run().
+        self.turn_cooldown_until = 0.0
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -208,6 +218,7 @@ class MazeNavigator:
 
         self.timed_drive(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED,
                          POST_TURN_ADVANCE_SECONDS)
+        self.turn_cooldown_until = time.monotonic() + TURN_COOLDOWN_SECONDS
 
     def back_up_to_wall(self):
         # Back up until the rear sensor says a wall is close behind, instead
@@ -323,6 +334,10 @@ class MazeNavigator:
                 ) * speed_scale
             else:
                 forward_speed = FORWARD_SPEED
+
+            # Cap speed for a bit after a turn - see TURN_COOLDOWN_SECONDS.
+            if time.monotonic() < self.turn_cooldown_until:
+                forward_speed = min(forward_speed, TURN_COOLDOWN_SPEED)
 
             # Steer to stay roughly centred in the corridor. If both walls
             # are visible, balance the distance to each. If only one is,
