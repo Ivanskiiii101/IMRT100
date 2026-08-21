@@ -91,8 +91,14 @@ FRONT_BLOCK_CONFIRM_SAMPLES = 2
 # it handle corners that aren't 90 degrees - it just keeps turning until the
 # front is actually clear rather than assuming how far that takes.
 # MAX_TURN_SECONDS is only a safety cap (covers roughly a full 180 degrees).
+# When the reverse-fallback below kicks in, it needs enough of this budget
+# to first undo SINGLE_TURN_BUDGET_SECONDS of wrong rotation and then still
+# complete a normal turn in the correct direction - so this must be
+# comfortably more than 2x that, or the fallback can run out of time
+# mid-correction and leave the robot facing a direction that isn't clear,
+# which just triggers another turn immediately after.
 TURN_STEP_SECONDS = 0.05
-MAX_TURN_SECONDS = 1.7
+MAX_TURN_SECONDS = 2.2
 
 # Which way to turn is decided from a single left-vs-right comparison right
 # at the corner - exactly where those readings are least reliable (oblique
