@@ -1,24 +1,26 @@
 # Right-hand wall follower for IMRT100.
 #
-# Clean rebuild combining everything confirmed across testing this project.
-# Core decision, per corridor tick, is simple by design:
+# Three sensors, kept deliberately simple:
+#   - keep the right wall close (RIGHT_TARGET_CM)
+#   - keep the left wall at bay, never getting close (LEFT_MIN_CM)
+#   - if the right reading changes drastically, that's a turn: turn right
+#     once, then watch the front - if it reads open, keep moving forward
+#     (still keeping left at bay) until the right wall is picked up again,
+#     at which point go back to tracking it closely as normal
+#   - if the front is blocked, it's a dead end: turn left
 #
-#   right sees a wall nearby  -> MOVE_FORWARD (front permitting)
-#   right sees no wall nearby -> TURN_RIGHT (a real opening)
-#   front blocked             -> TURN_LEFT (dead end)
+# The one thing removed after the last test: there was a multi-attempt
+# "turn, search, if not found turn again" loop here. Three retries, each
+# turning further, compounded into a full spin that ended up facing
+# backward. There is now exactly one turn per junction, matching what was
+# asked for - no retry, no escalation.
 #
-# Turn detection and hug-distance steering are deliberately kept as two
-# separate concerns with two separate thresholds. Earlier versions reused
-# one right-side number for both jobs and broke the same way each time -
-# normal hug-distance variation looked identical to a real opening, so it
-# kept trying to turn in the middle of an ordinary corridor. RIGHT_OPEN_CM
-# only decides "is the wall genuinely gone" and is set from an actual test
-# log where the robot read 26-90cm during ordinary (if erratic, undriven-
-# straight) driving - a real opening should read far higher than that.
-# RIGHT_TARGET_CM/LEFT_MIN_CM are unrelated: a light, always-on steering
-# correction to counteract the two motors' mismatch (proven repeatedly
-# earlier in this project) drifting the heading unopposed. Without it the
-# robot drives dead straight in whatever direction the mismatch points it.
+# Turn detection and hug-distance steering are still two separate concerns
+# with two separate numbers, since reusing one right-side threshold for
+# both broke the same way every time earlier - normal hug-distance
+# variation looked identical to a real opening. RIGHT_OPEN_CM/RIGHT_JUMP_CM
+# only decide "has the wall genuinely changed"; RIGHT_TARGET_CM/LEFT_MIN_CM
+# only decide how to steer while driving straight.
 #
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
@@ -40,8 +42,12 @@
 #   - a side wall closer than SIDE_STOP_CM gets an immediate stop-and-move-
 #     away response, since gentle driving-forward correction can't always
 #     avoid a wall that's already that close
-#   - a turn rotates in small increments, checking the front after each
-#     one, instead of committing to a fixed duration for a specific angle
+#   - the dead-end turn rotates in small increments, checking the front
+#     after each one - meaningful there since the front was genuinely
+#     blocked to start with. The junction turn is a fixed duration instead,
+#     since the front is usually already clear at a junction, which made
+#     "rotate until front clears" fire almost immediately or, with a
+#     minimum-time floor added, over-rotate - see RIGHT_TURN_SECONDS.
 
 from collections import deque
 import statistics
@@ -80,14 +86,13 @@ RIGHT_OPEN_CM = 150
 # subject to the same confirm-samples debounce as before.
 RIGHT_JUMP_CM = 60
 # After turning at a junction, a reading at or below this counts as having
-# found the wall again - well below RIGHT_OPEN_CM, comfortably above
+# picked the wall back up - well below RIGHT_OPEN_CM, comfortably above
 # ordinary driving noise around RIGHT_TARGET_CM.
 RIGHT_REACQUIRE_CM = 90
-# How long each turn-then-search attempt gets to find the wall before
-# giving up and turning again, and how many attempts before giving up
-# entirely at one junction.
-JUNCTION_SEARCH_SECONDS = 1.2
-MAX_JUNCTION_ATTEMPTS = 3
+# Fixed duration for the junction turn - tune this on the robot. Not
+# condition-based (see module docstring for why "rotate until front clears"
+# doesn't work well for this specific turn).
+RIGHT_TURN_SECONDS = 0.85
 
 # The two motors aren't perfectly matched - proven repeatedly earlier in
 # this project - so driving with literally equal motor speeds lets the
@@ -125,14 +130,9 @@ SENSOR_NO_ECHO_RAW = 250
 
 CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout
 TURN_STEP_SECONDS = 0.05
-MAX_TURN_SECONDS = 1.7      # safety cap per turn (covers roughly 180 degrees)
-# A turn at a junction usually starts with the front already clear (that's
-# part of why it's a junction), unlike the old dead-end trigger where the
-# front was genuinely blocked at the start. Without a floor, "front is
-# clear" can be true before the robot has rotated at all, ending the turn
-# after one ~50ms step. Don't even check for a clear front until this much
-# time has actually passed.
-MIN_TURN_SECONDS = 0.5
+# Safety cap for the dead-end turn only (covers roughly 180 degrees). The
+# junction turn is fixed-duration - see RIGHT_TURN_SECONDS.
+MAX_TURN_SECONDS = 1.7
 SIDE_AVOID_BACKUP_SECONDS = 0.10
 SIDE_AVOID_TURN_SECONDS = 0.15
 
@@ -162,6 +162,12 @@ class RightWallFollower:
         # (a junction) - separate from self.history, which is for cleaning
         # up raw sensor noise.
         self.recent_right = deque(maxlen=5)
+        # True while actively tracking the right wall closely. False right
+        # after a junction turn, until the wall is picked up again - during
+        # that time steering only keeps the left wall at bay, since right
+        # is expected to read far and using it as a target would fight the
+        # search instead of helping it.
+        self.wall_acquired = True
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -183,70 +189,27 @@ class RightWallFollower:
             time.sleep(0.05)
 
     def rotate_until_clear(self, motor_1, motor_2):
-        start = time.monotonic()
-        deadline = start + MAX_TURN_SECONDS
+        # Meaningful for the dead-end turn: the front was genuinely blocked
+        # to start with, so "front clears" is a real signal of having
+        # turned away from the obstruction.
+        deadline = time.monotonic() + MAX_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             self.send(motor_1, motor_2)
             time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
-            if time.monotonic() - start >= MIN_TURN_SECONDS and centre >= FRONT_STOP_CM:
+            if centre >= FRONT_STOP_CM:
                 break
         self.stop()
 
     def turn_right(self):
+        # Fixed duration, not condition-based - see module docstring.
         self.stop()
-        self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
+        self.timed_drive(TURN_SPEED, -TURN_SPEED, RIGHT_TURN_SECONDS)
+        self.stop()
 
     def turn_left(self):
         self.stop()
         self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
-
-    def advance_and_search(self, max_duration):
-        # Drive forward using the same steering correction as normal
-        # driving - while right still reads far this naturally curves
-        # toward finding a wall, rather than driving dead straight through
-        # the junction. Returns "found", "front_blocked", or "timeout".
-        deadline = time.monotonic() + max_duration
-        while time.monotonic() < deadline and not self.robot.shutdown_now:
-            distances = self.read_distances()
-            centre = distances[SENSOR_CENTRE]
-            right = distances[SENSOR_RIGHT]
-            left = distances[SENSOR_LEFT]
-            if centre <= FRONT_STOP_CM:
-                self.stop()
-                return "front_blocked"
-            if right <= RIGHT_REACQUIRE_CM:
-                self.stop()
-                return "found"
-            right_error = right - RIGHT_TARGET_CM
-            left_error = max(0.0, LEFT_MIN_CM - left)
-            correction = clamp(
-                (right_error + left_error) * STEER_GAIN,
-                -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
-            )
-            self.send(MIN_FORWARD_SPEED + correction,
-                     MIN_FORWARD_SPEED - correction)
-            time.sleep(0.05)
-        self.stop()
-        return "timeout"
-
-    def navigate_junction(self):
-        # A junction can be wider than one pivot covers - turn, advance a
-        # bit looking for the wall, and if it's still not there, advance
-        # further (stopping short of the front wall) and turn again, rather
-        # than committing to a single turn and hoping.
-        for attempt in range(1, MAX_JUNCTION_ATTEMPTS + 1):
-            print(f"    turn {attempt}/{MAX_JUNCTION_ATTEMPTS}")
-            self.turn_right()
-            result = self.advance_and_search(JUNCTION_SEARCH_SECONDS)
-            if result == "found":
-                return
-            if result == "front_blocked":
-                # Let the normal front-blocked handling take it from here
-                # next tick instead of turning again into a wall.
-                return
-        print("    gave up finding the right wall after "
-              f"{MAX_JUNCTION_ATTEMPTS} turns")
 
     def avoid_side_wall(self, close_sensor):
         # A side wall this close needs a real stop-and-move-away response,
@@ -328,16 +291,20 @@ class RightWallFollower:
                 self.front_blocked_streak = 0
                 continue
 
-            # A junction can show up as a sustained high absolute reading,
-            # or as a sudden rise from wherever right was recently tracking
-            # even if it doesn't reach RIGHT_OPEN_CM outright.
+            # Only consider "right changed drastically" while actually
+            # tracking a wall - while searching after a turn, right is
+            # expected to read far already, so this isn't meaningful again
+            # until the wall has been picked back up.
             right_jumped = (
-                len(self.recent_right) == self.recent_right.maxlen
+                self.wall_acquired
+                and len(self.recent_right) == self.recent_right.maxlen
                 and right - min(self.recent_right) >= RIGHT_JUMP_CM
             )
             self.recent_right.append(right)
 
-            right_open_now = right >= RIGHT_OPEN_CM or right_jumped
+            right_open_now = self.wall_acquired and (
+                right >= RIGHT_OPEN_CM or right_jumped
+            )
             front_blocked_now = centre <= FRONT_STOP_CM
 
             self.right_open_streak = (
@@ -348,21 +315,30 @@ class RightWallFollower:
             )
 
             if self.right_open_streak >= RIGHT_OPEN_CONFIRM_SAMPLES:
-                print(f"\n>>> JUNCTION at left={left:.0f} "
+                print(f"\n>>> TURN_RIGHT (junction) at left={left:.0f} "
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.recent_right.clear()
-                self.navigate_junction()
+                self.turn_right()
+                # Now search: keep left at bay, don't chase a right target
+                # until the wall is actually found again.
+                self.wall_acquired = False
                 continue
 
             if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
-                print(f"\n>>> TURN_LEFT at left={left:.0f} "
+                print(f"\n>>> TURN_LEFT (dead end) at left={left:.0f} "
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.turn_left()
                 continue
+
+            # While searching (wall not yet acquired), picking the wall back
+            # up switches steering back to tracking it closely.
+            if not self.wall_acquired and right <= RIGHT_REACQUIRE_CM:
+                print(f"\n<<< right wall picked up again at right={right:.0f}")
+                self.wall_acquired = True
 
             # Neither turn is confirmed yet. If the front is genuinely clear
             # right now, keep driving; if it looks blocked but isn't
@@ -383,12 +359,17 @@ class RightWallFollower:
                     forward_speed = FORWARD_SPEED
 
                 # Light, always-on correction so the two motors' mismatch
-                # can't drift the heading unopposed. Right holds a true
-                # target (always live except at the exact setpoint); left is
-                # only a floor - it pushes back if crossed but doesn't fight
-                # to hold an exact left distance too.
-                right_error = right - RIGHT_TARGET_CM
+                # can't drift the heading unopposed. Left is always a floor -
+                # it pushes back if crossed but doesn't fight to hold an
+                # exact left distance. Right is only chased as a target while
+                # actually tracking the wall; while searching, only left
+                # matters, so a still-far right reading doesn't fight the
+                # search.
                 left_error = max(0.0, LEFT_MIN_CM - left)
+                if self.wall_acquired:
+                    right_error = right - RIGHT_TARGET_CM
+                else:
+                    right_error = 0.0
                 correction = clamp(
                     (right_error + left_error) * STEER_GAIN,
                     -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
