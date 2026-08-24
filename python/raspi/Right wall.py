@@ -63,7 +63,10 @@ TURN_SPEED = 140
 # front_blocked/right_blocked in the original algorithm both used one shared
 # wall_threshold (0.20m); split here per the testing note above.
 FRONT_THRESHOLD_CM = 30
-RIGHT_THRESHOLD_CM = 20
+# Raised from 20 - the log showed the robot stably hugging the right wall
+# at 26-29cm during normal driving, well above 20, so "right wall present"
+# was never true and it read every straight corridor as an opening.
+RIGHT_THRESHOLD_CM = 40
 # Start easing forward speed down from this far out, so it's already slow
 # by the time FRONT_THRESHOLD_CM is reached instead of braking abruptly.
 FRONT_SLOWDOWN_CM = 80
