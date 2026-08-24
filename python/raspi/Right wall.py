@@ -1,26 +1,32 @@
 # Right-hand wall follower for IMRT100.
 #
 # Three sensors, kept deliberately simple:
-#   - keep the right wall close (RIGHT_TARGET_CM)
-#   - keep the left wall at bay, never getting close (LEFT_MIN_CM)
+#   - keep the right wall within an acceptable range, not one fixed number
+#     (RIGHT_NEAR_CM to RIGHT_FAR_CM)
+#   - keep the left wall at bay the same way (LEFT_NEAR_CM to LEFT_FAR_CM)
 #   - if the right reading changes drastically, that's a turn: turn right
 #     once, then watch the front - if it reads open, keep moving forward
 #     (still keeping left at bay) until the right wall is picked up again,
 #     at which point go back to tracking it closely as normal
 #   - if the front is blocked, it's a dead end: turn left
 #
-# The one thing removed after the last test: there was a multi-attempt
-# "turn, search, if not found turn again" loop here. Three retries, each
-# turning further, compounded into a full spin that ended up facing
-# backward. There is now exactly one turn per junction, matching what was
-# asked for - no retry, no escalation.
+# Two things fixed after the last few tests:
+#   - wall_acquired used to start True, so an open starting bay (no wall
+#     found yet) looked identical to "the wall just opened up" and it tried
+#     to turn immediately, before ever actually following anything. It now
+#     starts False, same as right after any junction turn - not tracking a
+#     wall yet, only watching for one to show up.
+#   - there was a multi-attempt "turn, search, if not found turn again"
+#     loop here. Three retries, each turning further, compounded into a
+#     full spin that ended up facing backward. There is now exactly one
+#     turn per junction - no retry, no escalation.
 #
 # Turn detection and hug-distance steering are still two separate concerns
-# with two separate numbers, since reusing one right-side threshold for
-# both broke the same way every time earlier - normal hug-distance
+# with two separate sets of numbers, since reusing one right-side threshold
+# for both broke the same way every time earlier - normal hug-distance
 # variation looked identical to a real opening. RIGHT_OPEN_CM/RIGHT_JUMP_CM
-# only decide "has the wall genuinely changed"; RIGHT_TARGET_CM/LEFT_MIN_CM
-# only decide how to steer while driving straight.
+# only decide "has the wall genuinely changed"; RIGHT_NEAR_CM/RIGHT_FAR_CM/
+# LEFT_NEAR_CM/LEFT_FAR_CM only decide how to steer while driving straight.
 #
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
@@ -86,8 +92,8 @@ RIGHT_OPEN_CM = 150
 # subject to the same confirm-samples debounce as before.
 RIGHT_JUMP_CM = 60
 # After turning at a junction, a reading at or below this counts as having
-# picked the wall back up - well below RIGHT_OPEN_CM, comfortably above
-# ordinary driving noise around RIGHT_TARGET_CM.
+# picked the wall back up - well below RIGHT_OPEN_CM, comfortably above the
+# normal RIGHT_NEAR_CM-RIGHT_FAR_CM tracking range below.
 RIGHT_REACQUIRE_CM = 90
 # Fixed duration for the junction turn - tune this on the robot. Not
 # condition-based (see module docstring for why "rotate until front clears"
@@ -97,16 +103,17 @@ RIGHT_TURN_SECONDS = 0.85
 # The two motors aren't perfectly matched - proven repeatedly earlier in
 # this project - so driving with literally equal motor speeds lets the
 # robot drift steadily toward one wall with nothing to counteract it.
-# MOVE_FORWARD steers continuously to hold RIGHT_TARGET_CM from the right
-# wall (a true single target, not a dead-zone band, so it's always actively
-# correcting except at the exact setpoint) and, independently, pushes away
-# if it ever gets closer than LEFT_MIN_CM to the left wall - a floor, not a
-# target, so it doesn't fight to hold an exact left distance too. Both are
-# kept well clear of RIGHT_OPEN_CM so neither can be confused with a real
-# opening.
-RIGHT_TARGET_CM = 50
-LEFT_MIN_CM = 70
+# Each side has an acceptable range, not one fixed number: inside it, only
+# a gentle pull toward the middle (never a hard zero - a true zero is what
+# let the drift go uncorrected before); outside it, a firm correction back
+# in. Both ranges are kept well clear of RIGHT_OPEN_CM so neither can be
+# confused with a real opening.
+RIGHT_NEAR_CM = 30      # steer away from the right wall below this
+RIGHT_FAR_CM = 50        # steer back toward the right wall above this
+LEFT_NEAR_CM = 30       # steer away from the left wall below this
+LEFT_FAR_CM = 70         # steer back toward the left wall above this
 STEER_GAIN = 2
+INSIDE_BAND_GAIN = 0.4
 MAX_STEER_CORRECTION = 35
 
 # A side wall this close needs a real stop-and-move-away response, not just
@@ -170,8 +177,12 @@ class RightWallFollower:
         # after a junction turn, until the wall is picked up again - during
         # that time steering only keeps the left wall at bay, since right
         # is expected to read far and using it as a target would fight the
-        # search instead of helping it.
-        self.wall_acquired = True
+        # search instead of helping it. Starts False too: at the very start
+        # there's no wall being tracked yet either (often literally an open
+        # starting bay), and starting True made the robot treat that as "the
+        # wall just opened up" and try to turn immediately, before it had
+        # ever actually found one.
+        self.wall_acquired = False
         self.reacquire_streak = 0
 
     def send(self, motor_1, motor_2):
@@ -378,19 +389,33 @@ class RightWallFollower:
                     forward_speed = FORWARD_SPEED
 
                 # Light, always-on correction so the two motors' mismatch
-                # can't drift the heading unopposed. Left is always a floor -
-                # it pushes back if crossed but doesn't fight to hold an
-                # exact left distance. Right is only chased as a target while
+                # can't drift the heading unopposed. Left always contributes
+                # (an acceptable range, not a fixed number - see
+                # LEFT_NEAR_CM/LEFT_FAR_CM). Right only contributes while
                 # actually tracking the wall; while searching, only left
                 # matters, so a still-far right reading doesn't fight the
                 # search.
-                left_error = max(0.0, LEFT_MIN_CM - left)
-                if self.wall_acquired:
-                    right_error = right - RIGHT_TARGET_CM
+                if left < LEFT_NEAR_CM:
+                    left_contribution = (LEFT_NEAR_CM - left) * STEER_GAIN
+                elif left > LEFT_FAR_CM:
+                    left_contribution = (LEFT_FAR_CM - left) * STEER_GAIN
                 else:
-                    right_error = 0.0
+                    left_mid = (LEFT_NEAR_CM + LEFT_FAR_CM) / 2
+                    left_contribution = (left_mid - left) * INSIDE_BAND_GAIN
+
+                if self.wall_acquired:
+                    if right < RIGHT_NEAR_CM:
+                        right_contribution = (right - RIGHT_NEAR_CM) * STEER_GAIN
+                    elif right > RIGHT_FAR_CM:
+                        right_contribution = (right - RIGHT_FAR_CM) * STEER_GAIN
+                    else:
+                        right_mid = (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
+                        right_contribution = (right - right_mid) * INSIDE_BAND_GAIN
+                else:
+                    right_contribution = 0.0
+
                 correction = clamp(
-                    (right_error + left_error) * STEER_GAIN,
+                    right_contribution + left_contribution,
                     -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
                 )
                 self.send(forward_speed + correction, forward_speed - correction)
