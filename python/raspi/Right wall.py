@@ -35,6 +35,24 @@
 # only decide "has the wall genuinely changed"; RIGHT_NEAR_CM/RIGHT_FAR_CM/
 # LEFT_NEAR_CM/LEFT_FAR_CM only decide how to steer while driving straight.
 #
+# These sensors are noisy - readings jump around even with nothing physically
+# changing - so every raw threshold comparison has been replaced with a named
+# zone (classify_front, band_contribution). The zones exist for two reasons:
+#   - a reading right at a boundary should move you into the neighbouring
+#     zone's behaviour, not trigger a one-off special case for that boundary
+#   - moving between zones is cheap to reason about and print, so it's
+#     obvious from the live output which zone actually drove any given
+#     decision, instead of re-deriving it from raw numbers after the fact
+# This is also what fixed a real bug: front used to hard-stop
+# (self.send(0, 0)) on any single tick where centre dipped to FRONT_STOP_CM,
+# well before FRONT_BLOCK_CONFIRM_SAMPLES had confirmed it was a real dead
+# end - a noisy reading oscillating near that boundary meant full motor
+# stops over and over through open corridors ("stops 100 times"). An
+# unconfirmed BLOCKED front now just means "crawl at MIN_FORWARD_SPEED",
+# the same as the bottom of the SLOW zone - only a *confirmed* BLOCKED
+# streak (still gated by FRONT_BLOCK_CONFIRM_SAMPLES, unchanged) actually
+# stops the robot to turn.
+#
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
 #   - sensor mapping confirmed by hand: dist_1=right, dist_2=left,
@@ -179,6 +197,35 @@ def clamp(value, lower=-500, upper=500):
     return max(lower, min(upper, int(value)))
 
 
+def classify_front(centre):
+    # Named zones instead of a bare threshold comparison, mainly so the
+    # boundary between them can be a smooth speed change (see run()) rather
+    # than a hard action triggered by one noisy sample. These sensors jitter
+    # near a boundary; reacting instantly to a single BLOCKED reading was
+    # sending a full motor stop on every such tick, well before the 2-sample
+    # confirmation had a chance to decide whether it was real.
+    if centre <= FRONT_STOP_CM:
+        return "BLOCKED"
+    if centre < FRONT_SLOWDOWN_CM:
+        return "SLOW"
+    return "CLEAR"
+
+
+def band_contribution(value, near, far, sign):
+    # Classifies a side reading into CLOSE/NORMAL/FAR and returns both the
+    # zone and the steering contribution for it. sign=+1 for the right
+    # sensor, sign=-1 for the left (same zones, mirrored correction
+    # direction - see the two call sites in run()).
+    mid = (near + far) / 2
+    if value < near:
+        zone, error, gain = "CLOSE", value - near, STEER_GAIN
+    elif value > far:
+        zone, error, gain = "FAR", value - far, STEER_GAIN
+    else:
+        zone, error, gain = "NORMAL", value - mid, INSIDE_BAND_GAIN
+    return zone, sign * error * gain
+
+
 class RightWallFollower:
     def __init__(self, robot):
         self.robot = robot
@@ -306,9 +353,11 @@ class RightWallFollower:
             left = distances[SENSOR_LEFT]
             centre = distances[SENSOR_CENTRE]
             right = distances[SENSOR_RIGHT]
+            front_zone = classify_front(centre)
 
             print(
-                f"left={left:5.1f}  centre={centre:5.1f}  right={right:5.1f}",
+                f"left={left:5.1f}  centre={centre:5.1f} [{front_zone:7s}]  "
+                f"right={right:5.1f}",
                 end="\r",
                 flush=True,
             )
@@ -358,7 +407,7 @@ class RightWallFollower:
             right_open_now = self.has_ever_found_wall and (
                 right >= RIGHT_OPEN_CM or right_jumped
             )
-            front_blocked_now = centre <= FRONT_STOP_CM
+            front_blocked_now = front_zone == "BLOCKED"
 
             self.right_open_streak = (
                 self.right_open_streak + 1 if right_open_now else 0
@@ -440,62 +489,71 @@ class RightWallFollower:
                     self.reacquire_streak = 0
                     self.recent_right.clear()
 
-            # Neither turn is confirmed yet. If the front is genuinely clear
-            # right now, keep driving; if it looks blocked but isn't
-            # confirmed, pause rather than risk driving into something that
-            # might be real.
-            if front_blocked_now:
-                self.send(0, 0)
-            else:
-                # Made it back to normal forward driving - no longer stuck.
-                self.consecutive_dead_ends = 0
-                if centre < FRONT_SLOWDOWN_CM:
-                    speed_scale = (centre - FRONT_STOP_CM) / (
-                        FRONT_SLOWDOWN_CM - FRONT_STOP_CM
-                    )
-                    speed_scale = max(0.0, min(1.0, speed_scale))
-                    forward_speed = MIN_FORWARD_SPEED + (
-                        FORWARD_SPEED - MIN_FORWARD_SPEED
-                    ) * speed_scale
-                else:
-                    forward_speed = FORWARD_SPEED
+            # Neither turn is confirmed yet. front_zone only sets how fast to
+            # go here - it never stops the robot outright. A single BLOCKED
+            # reading isn't trusted on its own (that needs
+            # FRONT_BLOCK_CONFIRM_SAMPLES, handled above); treated the same
+            # way, it just means "crawl at the slowdown floor," same as the
+            # bottom of the SLOW zone. Hard-stopping on every unconfirmed
+            # BLOCKED tick - which sensor noise flips in and out of
+            # constantly - is what made the robot stop and restart over and
+            # over instead of driving smoothly through open space.
+            self.consecutive_dead_ends = 0
 
-                # Light, always-on correction so the two motors' mismatch
-                # can't drift the heading unopposed. Left always contributes
-                # (an acceptable range, not a fixed number - see
-                # LEFT_NEAR_CM/LEFT_FAR_CM) as long as there's actually a
-                # wall there to react to (LEFT_SENSE_CM) - open space, most
-                # obviously the starting bay, is not "drifted away from a
-                # wall," it's just open, and gets zero correction. Right
-                # only contributes while actually tracking the wall; while
-                # searching, only left matters, so a still-far right
-                # reading doesn't fight the search.
-                if left >= LEFT_SENSE_CM:
-                    left_contribution = 0.0
-                elif left < LEFT_NEAR_CM:
-                    left_contribution = (LEFT_NEAR_CM - left) * STEER_GAIN
-                elif left > LEFT_FAR_CM:
-                    left_contribution = (LEFT_FAR_CM - left) * STEER_GAIN
-                else:
-                    left_mid = (LEFT_NEAR_CM + LEFT_FAR_CM) / 2
-                    left_contribution = (left_mid - left) * INSIDE_BAND_GAIN
-
-                if self.wall_acquired:
-                    if right < RIGHT_NEAR_CM:
-                        right_contribution = (right - RIGHT_NEAR_CM) * STEER_GAIN
-                    elif right > RIGHT_FAR_CM:
-                        right_contribution = (right - RIGHT_FAR_CM) * STEER_GAIN
-                    else:
-                        right_mid = (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
-                        right_contribution = (right - right_mid) * INSIDE_BAND_GAIN
-                else:
-                    right_contribution = 0.0
-
-                correction = clamp(
-                    right_contribution + left_contribution,
-                    -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
+            if front_zone == "CLEAR":
+                forward_speed = FORWARD_SPEED
+            elif front_zone == "SLOW":
+                speed_scale = (centre - FRONT_STOP_CM) / (
+                    FRONT_SLOWDOWN_CM - FRONT_STOP_CM
                 )
-                self.send(forward_speed + correction, forward_speed - correction)
+                speed_scale = max(0.0, min(1.0, speed_scale))
+                forward_speed = MIN_FORWARD_SPEED + (
+                    FORWARD_SPEED - MIN_FORWARD_SPEED
+                ) * speed_scale
+            else:  # BLOCKED, but not yet confirmed - crawl, don't slam to a stop
+                forward_speed = MIN_FORWARD_SPEED
+
+            # Light, always-on correction so the two motors' mismatch can't
+            # drift the heading unopposed. Left always contributes (an
+            # acceptable range, not a fixed number - see LEFT_NEAR_CM/
+            # LEFT_FAR_CM) as long as there's actually a wall there to react
+            # to (LEFT_SENSE_CM) - open space, most obviously the starting
+            # bay, is not "drifted away from a wall," it's just open, and
+            # gets zone NONE / zero correction. Right only contributes while
+            # actually tracking the wall; while searching, only left
+            # matters, so a still-far right reading doesn't fight the
+            # search.
+            if left >= LEFT_SENSE_CM:
+                left_zone, left_contribution = "NONE", 0.0
+            else:
+                left_zone, left_contribution = band_contribution(
+                    left, LEFT_NEAR_CM, LEFT_FAR_CM, sign=-1
+                )
+
+            if self.wall_acquired:
+                right_zone, right_contribution = band_contribution(
+                    right, RIGHT_NEAR_CM, RIGHT_FAR_CM, sign=1
+                )
+            else:
+                right_zone, right_contribution = "SEARCHING", 0.0
+
+            correction = clamp(
+                right_contribution + left_contribution,
+                -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
+            )
+            self.send(forward_speed + correction, forward_speed - correction)
+
+            # Overwrites the same status line printed at the top of the loop
+            # (still \r, not \n) now that the side zones are known - so it's
+            # visible live which zone actually drove this tick's steering,
+            # not just the raw numbers.
+            print(
+                f"left={left:5.1f}[{left_zone:9s}]  centre={centre:5.1f} "
+                f"[{front_zone:7s}]  right={right:5.1f}[{right_zone:9s}]  "
+                f"speed={forward_speed:.0f}",
+                end="\r",
+                flush=True,
+            )
 
             remaining = CONTROL_PERIOD - (time.monotonic() - started)
             if remaining > 0:
