@@ -73,6 +73,21 @@ FRONT_SLOWDOWN_CM = 80
 # well above the 26-90cm range seen during normal (if erratic) driving in
 # testing, and well below what an actual opening reads.
 RIGHT_OPEN_CM = 150
+# A junction can also show up as a sudden rise from wherever right was
+# recently tracking, even if it doesn't reach RIGHT_OPEN_CM outright (e.g.
+# the corridor beyond the junction isn't very wide). A rise at least this
+# big from the recent minimum counts too - either signal is enough,
+# subject to the same confirm-samples debounce as before.
+RIGHT_JUMP_CM = 60
+# After turning at a junction, a reading at or below this counts as having
+# found the wall again - well below RIGHT_OPEN_CM, comfortably above
+# ordinary driving noise around RIGHT_TARGET_CM.
+RIGHT_REACQUIRE_CM = 90
+# How long each turn-then-search attempt gets to find the wall before
+# giving up and turning again, and how many attempts before giving up
+# entirely at one junction.
+JUNCTION_SEARCH_SECONDS = 1.2
+MAX_JUNCTION_ATTEMPTS = 3
 
 # The two motors aren't perfectly matched - proven repeatedly earlier in
 # this project - so driving with literally equal motor speeds lets the
@@ -136,6 +151,10 @@ class RightWallFollower:
         self.exit_open_count = 0
         self.right_open_streak = 0
         self.front_blocked_streak = 0
+        # Recent smoothed right readings, used only to detect a sudden rise
+        # (a junction) - separate from self.history, which is for cleaning
+        # up raw sensor noise.
+        self.recent_right = deque(maxlen=5)
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -173,6 +192,53 @@ class RightWallFollower:
     def turn_left(self):
         self.stop()
         self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
+
+    def advance_and_search(self, max_duration):
+        # Drive forward using the same steering correction as normal
+        # driving - while right still reads far this naturally curves
+        # toward finding a wall, rather than driving dead straight through
+        # the junction. Returns "found", "front_blocked", or "timeout".
+        deadline = time.monotonic() + max_duration
+        while time.monotonic() < deadline and not self.robot.shutdown_now:
+            distances = self.read_distances()
+            centre = distances[SENSOR_CENTRE]
+            right = distances[SENSOR_RIGHT]
+            left = distances[SENSOR_LEFT]
+            if centre <= FRONT_STOP_CM:
+                self.stop()
+                return "front_blocked"
+            if right <= RIGHT_REACQUIRE_CM:
+                self.stop()
+                return "found"
+            right_error = right - RIGHT_TARGET_CM
+            left_error = max(0.0, LEFT_MIN_CM - left)
+            correction = clamp(
+                (right_error + left_error) * STEER_GAIN,
+                -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
+            )
+            self.send(MIN_FORWARD_SPEED + correction,
+                     MIN_FORWARD_SPEED - correction)
+            time.sleep(0.05)
+        self.stop()
+        return "timeout"
+
+    def navigate_junction(self):
+        # A junction can be wider than one pivot covers - turn, advance a
+        # bit looking for the wall, and if it's still not there, advance
+        # further (stopping short of the front wall) and turn again, rather
+        # than committing to a single turn and hoping.
+        for attempt in range(1, MAX_JUNCTION_ATTEMPTS + 1):
+            print(f"    turn {attempt}/{MAX_JUNCTION_ATTEMPTS}")
+            self.turn_right()
+            result = self.advance_and_search(JUNCTION_SEARCH_SECONDS)
+            if result == "found":
+                return
+            if result == "front_blocked":
+                # Let the normal front-blocked handling take it from here
+                # next tick instead of turning again into a wall.
+                return
+        print("    gave up finding the right wall after "
+              f"{MAX_JUNCTION_ATTEMPTS} turns")
 
     def avoid_side_wall(self, close_sensor):
         # A side wall this close needs a real stop-and-move-away response,
@@ -254,7 +320,16 @@ class RightWallFollower:
                 self.front_blocked_streak = 0
                 continue
 
-            right_open_now = right >= RIGHT_OPEN_CM
+            # A junction can show up as a sustained high absolute reading,
+            # or as a sudden rise from wherever right was recently tracking
+            # even if it doesn't reach RIGHT_OPEN_CM outright.
+            right_jumped = (
+                len(self.recent_right) == self.recent_right.maxlen
+                and right - min(self.recent_right) >= RIGHT_JUMP_CM
+            )
+            self.recent_right.append(right)
+
+            right_open_now = right >= RIGHT_OPEN_CM or right_jumped
             front_blocked_now = centre <= FRONT_STOP_CM
 
             self.right_open_streak = (
@@ -265,11 +340,12 @@ class RightWallFollower:
             )
 
             if self.right_open_streak >= RIGHT_OPEN_CONFIRM_SAMPLES:
-                print(f"\n>>> TURN_RIGHT at left={left:.0f} "
+                print(f"\n>>> JUNCTION at left={left:.0f} "
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
-                self.turn_right()
+                self.recent_right.clear()
+                self.navigate_junction()
                 continue
 
             if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
