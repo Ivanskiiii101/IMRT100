@@ -126,6 +126,13 @@ SENSOR_NO_ECHO_RAW = 250
 CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7      # safety cap per turn (covers roughly 180 degrees)
+# A turn at a junction usually starts with the front already clear (that's
+# part of why it's a junction), unlike the old dead-end trigger where the
+# front was genuinely blocked at the start. Without a floor, "front is
+# clear" can be true before the robot has rotated at all, ending the turn
+# after one ~50ms step. Don't even check for a clear front until this much
+# time has actually passed.
+MIN_TURN_SECONDS = 0.5
 SIDE_AVOID_BACKUP_SECONDS = 0.10
 SIDE_AVOID_TURN_SECONDS = 0.15
 
@@ -176,12 +183,13 @@ class RightWallFollower:
             time.sleep(0.05)
 
     def rotate_until_clear(self, motor_1, motor_2):
-        deadline = time.monotonic() + MAX_TURN_SECONDS
+        start = time.monotonic()
+        deadline = start + MAX_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             self.send(motor_1, motor_2)
             time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
-            if centre >= FRONT_STOP_CM:
+            if time.monotonic() - start >= MIN_TURN_SECONDS and centre >= FRONT_STOP_CM:
                 break
         self.stop()
 
