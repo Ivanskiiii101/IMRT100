@@ -63,6 +63,11 @@ RIGHT_FAR_CM = 90       # steer back toward the wall above this
 RIGHT_OPEN_CM = 250
 EXIT_OPEN_CM = 180
 REAR_CLEARANCE_CM = 15
+# Steer away (right) if left gets this close, even when right looks fine on
+# its own - a wide corridor on the right side can't tell the robot it's
+# drifting toward the left wall, since steering was only ever based on the
+# right sensor.
+LEFT_TOO_CLOSE_CM = 25
 # A side wall this close needs a real stop-and-move-away response, not just
 # a steering nudge while still driving toward it.
 SIDE_STOP_CM = 10
@@ -207,7 +212,7 @@ class RightWallFollower:
             self.back_up_to_wall(BACKUP_SECONDS)
         self.turn_left()
 
-    def _steering_correction(self, right):
+    def _steering_correction(self, right, left):
         # Outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, correct firmly.
         # Inside it, still pull gently toward the band centre rather than
         # applying zero correction - a hard zero would leave any inherent
@@ -223,7 +228,16 @@ class RightWallFollower:
         else:
             error = right - (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
             gain = INSIDE_BAND_GAIN
-        return clamp(error * gain, -CORRECTION, CORRECTION)
+        correction = error * gain
+
+        # The right-based band alone can't tell the robot is creeping toward
+        # the left wall while right still looks fine (e.g. a wide corridor
+        # on the right side) - push back toward the right if left gets close,
+        # on top of whatever the right-based correction already says.
+        if left < LEFT_TOO_CLOSE_CM:
+            correction += (LEFT_TOO_CLOSE_CM - left) * 2
+
+        return clamp(correction, -CORRECTION, CORRECTION)
 
     def _advance_while_clear(self, duration, speed=MIN_FORWARD_SPEED):
         # Steered, not equal-speed - driving perfectly straight here left the
@@ -234,7 +248,8 @@ class RightWallFollower:
             distances = self.read_distances()
             if distances[SENSOR_CENTRE] <= FRONT_STOP_CM:
                 break
-            correction = self._steering_correction(distances[SENSOR_RIGHT])
+            correction = self._steering_correction(
+                distances[SENSOR_RIGHT], distances[SENSOR_LEFT])
             self.send(speed + correction, speed - correction)
             time.sleep(0.05)
         self.stop()
@@ -250,9 +265,10 @@ class RightWallFollower:
             distances = self.read_distances()
             centre = distances[SENSOR_CENTRE]
             right = distances[SENSOR_RIGHT]
+            left = distances[SENSOR_LEFT]
             if centre <= FRONT_STOP_CM or right <= RIGHT_FAR_CM:
                 break
-            correction = self._steering_correction(right)
+            correction = self._steering_correction(right, left)
             self.send(MIN_FORWARD_SPEED + correction, MIN_FORWARD_SPEED - correction)
             time.sleep(0.05)
         self.stop()
@@ -406,7 +422,7 @@ class RightWallFollower:
             else:
                 forward_speed = FORWARD_SPEED
 
-            correction = self._steering_correction(right)
+            correction = self._steering_correction(right, left)
             motor_1 = forward_speed + correction
             motor_2 = forward_speed - correction
             self.send(motor_1, motor_2)
