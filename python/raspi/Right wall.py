@@ -50,7 +50,12 @@ INSIDE_BAND_GAIN = 0.4  # gentle pull toward band centre; much weaker than the
 FRONT_STOP_CM = 35
 FRONT_SLOWDOWN_CM = 80
 RIGHT_NEAR_CM = 20      # steer away from the wall below this
-RIGHT_FAR_CM = 55       # steer back toward the wall above this
+# Raised from 55 - readings up to ~90-100 can just be a genuinely wide
+# stretch of corridor, not something to correct hard against. Treating that
+# as "must snap back to the wall" caused wide oscillation (17 -> 100+ -> 17
+# repeatedly), which is how the robot ended up clipping a corner it
+# wouldn't have touched if it had tracked more smoothly.
+RIGHT_FAR_CM = 90       # steer back toward the wall above this
 # Only a near-total loss of the right wall counts as a real opening - a
 # tight pinch on the left is not a reason to turn on its own. This is
 # effectively "right reads 255 (no echo)", with a little tolerance for
@@ -202,13 +207,35 @@ class RightWallFollower:
             self.back_up_to_wall(BACKUP_SECONDS)
         self.turn_left()
 
+    def _steering_correction(self, right):
+        # Outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, correct firmly.
+        # Inside it, still pull gently toward the band centre rather than
+        # applying zero correction - a hard zero would leave any inherent
+        # motor speed mismatch to accumulate into an uncorrected drift. When
+        # right reads far (searching for the wall), this naturally curves
+        # toward finding it instead of driving dead straight.
+        if right < RIGHT_NEAR_CM:
+            error = right - RIGHT_NEAR_CM
+            gain = 2
+        elif right > RIGHT_FAR_CM:
+            error = right - RIGHT_FAR_CM
+            gain = 2
+        else:
+            error = right - (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
+            gain = INSIDE_BAND_GAIN
+        return clamp(error * gain, -CORRECTION, CORRECTION)
+
     def _advance_while_clear(self, duration, speed=MIN_FORWARD_SPEED):
+        # Steered, not equal-speed - driving perfectly straight here left the
+        # robot with no way to correct a slightly-off heading, letting it
+        # drift into whichever wall its heading happened to point at.
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline and not self.robot.shutdown_now:
-            centre = self.read_distances()[SENSOR_CENTRE]
-            if centre <= FRONT_STOP_CM:
+            distances = self.read_distances()
+            if distances[SENSOR_CENTRE] <= FRONT_STOP_CM:
                 break
-            self.send(speed, speed)
+            correction = self._steering_correction(distances[SENSOR_RIGHT])
+            self.send(speed + correction, speed - correction)
             time.sleep(0.05)
         self.stop()
 
@@ -216,7 +243,8 @@ class RightWallFollower:
         # After a turn, open space ahead means keep driving forward - not
         # for a fixed short burst, but until the right sensor actually picks
         # the wall back up (or the front blocks first). MAX_POST_TURN_SECONDS
-        # is only a safety cap.
+        # is only a safety cap. Steered the whole way, same reason as
+        # _advance_while_clear above.
         deadline = time.monotonic() + MAX_POST_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             distances = self.read_distances()
@@ -224,7 +252,8 @@ class RightWallFollower:
             right = distances[SENSOR_RIGHT]
             if centre <= FRONT_STOP_CM or right <= RIGHT_FAR_CM:
                 break
-            self.send(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED)
+            correction = self._steering_correction(right)
+            self.send(MIN_FORWARD_SPEED + correction, MIN_FORWARD_SPEED - correction)
             time.sleep(0.05)
         self.stop()
 
@@ -377,20 +406,7 @@ class RightWallFollower:
             else:
                 forward_speed = FORWARD_SPEED
 
-            # Outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, correct firmly.
-            # Inside it, still pull gently toward the band centre rather than
-            # applying zero correction - a hard zero would leave any inherent
-            # motor speed mismatch to accumulate into an uncorrected drift.
-            if right < RIGHT_NEAR_CM:
-                error = right - RIGHT_NEAR_CM
-                gain = 2
-            elif right > RIGHT_FAR_CM:
-                error = right - RIGHT_FAR_CM
-                gain = 2
-            else:
-                error = right - (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
-                gain = INSIDE_BAND_GAIN
-            correction = clamp(error * gain, -CORRECTION, CORRECTION)
+            correction = self._steering_correction(right)
             motor_1 = forward_speed + correction
             motor_2 = forward_speed - correction
             self.send(motor_1, motor_2)
