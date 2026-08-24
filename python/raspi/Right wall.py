@@ -10,16 +10,23 @@
 #     at which point go back to tracking it closely as normal
 #   - if the front is blocked, it's a dead end: turn left
 #
-# Two things fixed after the last few tests:
-#   - wall_acquired used to start True, so an open starting bay (no wall
-#     found yet) looked identical to "the wall just opened up" and it tried
-#     to turn immediately, before ever actually following anything. It now
-#     starts False, same as right after any junction turn - not tracking a
-#     wall yet, only watching for one to show up.
-#   - there was a multi-attempt "turn, search, if not found turn again"
-#     loop here. Three retries, each turning further, compounded into a
-#     full spin that ended up facing backward. There is now exactly one
-#     turn per junction - no retry, no escalation.
+# Two bugs fixed after the last few tests:
+#   - junction detection (turning right) was gated by wall_acquired, the
+#     same flag that tracks the CURRENT steering mode. That flag goes False
+#     after every junction turn and stays False until the wall is picked
+#     back up - but a dead-end TURN_LEFT never touches it. So if a dead end
+#     was ever hit while wall_acquired happened to be False (e.g. right at
+#     the start, before any wall had been found yet), right-turn detection
+#     was silently disabled for the rest of the run - every future blocked
+#     front then fell through to TURN_LEFT with no way to ever turn right
+#     again, which compounds into exactly the kind of repeated-left-turn
+#     spin that walks the robot back the way it came. Junction detection is
+#     now gated by a separate one-way flag, has_ever_found_wall, that only
+#     needs to become True once, ever, and is never affected by turns.
+#   - there was also a multi-attempt "turn, search, if not found turn
+#     again" loop here. Three retries, each turning further, compounded
+#     into a full spin on its own. There is now exactly one turn per
+#     junction - no retry, no escalation.
 #
 # Turn detection and hug-distance steering are still two separate concerns
 # with two separate sets of numbers, since reusing one right-side threshold
@@ -173,17 +180,24 @@ class RightWallFollower:
         # (a junction) - separate from self.history, which is for cleaning
         # up raw sensor noise.
         self.recent_right = deque(maxlen=5)
-        # True while actively tracking the right wall closely. False right
-        # after a junction turn, until the wall is picked up again - during
-        # that time steering only keeps the left wall at bay, since right
-        # is expected to read far and using it as a target would fight the
-        # search instead of helping it. Starts False too: at the very start
-        # there's no wall being tracked yet either (often literally an open
-        # starting bay), and starting True made the robot treat that as "the
-        # wall just opened up" and try to turn immediately, before it had
-        # ever actually found one.
+        # True while actively tracking the right wall closely (chase the
+        # RIGHT_NEAR_CM-RIGHT_FAR_CM band). False right after a junction
+        # turn, until the wall is picked up again - during that time
+        # steering only keeps the left wall at bay. This toggles back and
+        # forth freely and does NOT gate junction detection below - it only
+        # decides how to steer.
         self.wall_acquired = False
         self.reacquire_streak = 0
+        # Separate, one-way flag: once the robot has found a wall a single
+        # time, this stays True for the rest of the run. This is what gates
+        # junction detection, specifically so the open starting bay (no
+        # wall found yet) can't be misread as "the wall just opened up."
+        # Using wall_acquired for that instead was the actual bug: a dead-
+        # end TURN_LEFT never touches wall_acquired, so if one ever fired
+        # while it was False, right-turn detection was disabled permanently
+        # for the rest of the run - every future blocked front then fell
+        # through to TURN_LEFT with no way to ever turn right again.
+        self.has_ever_found_wall = False
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -307,18 +321,21 @@ class RightWallFollower:
                 self.front_blocked_streak = 0
                 continue
 
-            # Only consider "right changed drastically" while actually
-            # tracking a wall - while searching after a turn, right is
-            # expected to read far already, so this isn't meaningful again
-            # until the wall has been picked back up.
+            # A one-way latch: once a wall's been found, junction detection
+            # stays live for the rest of the run regardless of the current
+            # steering mode (wall_acquired) - see the note in __init__ for
+            # why using wall_acquired itself for this was the actual bug.
+            if right <= RIGHT_REACQUIRE_CM:
+                self.has_ever_found_wall = True
+
             right_jumped = (
-                self.wall_acquired
+                self.has_ever_found_wall
                 and len(self.recent_right) == self.recent_right.maxlen
                 and right - min(self.recent_right) >= RIGHT_JUMP_CM
             )
             self.recent_right.append(right)
 
-            right_open_now = self.wall_acquired and (
+            right_open_now = self.has_ever_found_wall and (
                 right >= RIGHT_OPEN_CM or right_jumped
             )
             front_blocked_now = centre <= FRONT_STOP_CM
