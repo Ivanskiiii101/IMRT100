@@ -228,8 +228,10 @@ class RightWallFollower:
             # Repeating the same turn direction hasn't worked - alternate in
             # case the actual way out is on the other side.
             if self.consecutive_blocked % 2 == 0:
+                print("    trying RIGHT this time")
                 self.turn_right()
             else:
+                print("    trying LEFT this time")
                 self.turn_left()
         else:
             self.back_up_to_wall(BACKUP_SECONDS)
@@ -402,7 +404,14 @@ class RightWallFollower:
 
             if self.right_open_count >= OPEN_CONFIRM_SAMPLES:
                 self.right_open_count = 0
+                print(f"\n>>> TURN RIGHT (opening) at "
+                      f"left={left:.0f} centre={centre:.0f} right={right:.0f} "
+                      f"behind={behind:.0f}")
                 self.turn_right()
+                after = self.read_distances()
+                print(f"<<< done, now left={after[SENSOR_LEFT]:.0f} "
+                      f"centre={after[SENSOR_CENTRE]:.0f} "
+                      f"right={after[SENSOR_RIGHT]:.0f}")
                 continue
 
             # Require a couple of consecutive close readings before treating
@@ -416,11 +425,21 @@ class RightWallFollower:
 
             if self.front_blocked_count >= FRONT_BLOCK_CONFIRM_SAMPLES:
                 self.front_blocked_count = 0
+                print(f"\n>>> DEAD END (front blocked) at "
+                      f"left={left:.0f} centre={centre:.0f} right={right:.0f} "
+                      f"behind={behind:.0f}")
                 self.dead_end_turn(behind)
+                after = self.read_distances()
+                print(f"<<< done, now left={after[SENSOR_LEFT]:.0f} "
+                      f"centre={after[SENSOR_CENTRE]:.0f} "
+                      f"right={after[SENSOR_RIGHT]:.0f}")
                 continue
 
             if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
                 close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
+                side_name = "LEFT" if close_sensor == SENSOR_LEFT else "RIGHT"
+                print(f"\n>>> AVOID {side_name} at "
+                      f"left={left:.0f} centre={centre:.0f} right={right:.0f}")
                 self.avoid_side_wall(close_sensor)
                 continue
 
