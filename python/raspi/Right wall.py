@@ -7,17 +7,18 @@
 #   right sees no wall nearby -> TURN_RIGHT (a real opening)
 #   front blocked             -> TURN_LEFT (dead end)
 #
-# The one deliberate change from earlier attempts: this doesn't try to
-# actively hold a specific hug distance from the right wall at all - it just
-# drives straight whenever the wall isn't confirmed gone. That matters
-# because every earlier version that used one right-side threshold to mean
-# both "steer to stay this close" and "this counts as an opening" broke the
-# same way - normal hug-distance variation looked identical to a real
-# opening, so it kept trying to turn in the middle of an ordinary corridor.
-# With no hug-distance behaviour to protect, RIGHT_OPEN_CM only has one job:
-# tell a genuine opening apart from normal driving. It's set from an actual
-# test log where the robot stably read 26-90cm during ordinary (if erratic)
-# driving; a real opening should read far higher than that.
+# Turn detection and hug-distance steering are deliberately kept as two
+# separate concerns with two separate thresholds. Earlier versions reused
+# one right-side number for both jobs and broke the same way each time -
+# normal hug-distance variation looked identical to a real opening, so it
+# kept trying to turn in the middle of an ordinary corridor. RIGHT_OPEN_CM
+# only decides "is the wall genuinely gone" and is set from an actual test
+# log where the robot read 26-90cm during ordinary (if erratic, undriven-
+# straight) driving - a real opening should read far higher than that.
+# RIGHT_NEAR_CM/RIGHT_FAR_CM are unrelated: a light, always-on steering
+# correction to counteract the two motors' mismatch (proven repeatedly
+# earlier in this project) drifting the heading unopposed. Without it the
+# robot drives dead straight in whatever direction the mismatch points it.
 #
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
@@ -72,6 +73,19 @@ FRONT_SLOWDOWN_CM = 80
 # well above the 26-90cm range seen during normal (if erratic) driving in
 # testing, and well below what an actual opening reads.
 RIGHT_OPEN_CM = 150
+
+# The two motors aren't perfectly matched - proven repeatedly earlier in
+# this project - so driving with literally equal motor speeds lets the
+# robot drift steadily toward one wall with nothing to counteract it. This
+# band gives MOVE_FORWARD a light, continuous correction to stay roughly
+# this far from the right wall, kept well clear of RIGHT_OPEN_CM so it can
+# never be confused with a real opening. Never a hard zero even inside the
+# band - a true zero is what let the drift go uncorrected before.
+RIGHT_NEAR_CM = 20      # steer away from the wall below this
+RIGHT_FAR_CM = 55       # steer back toward the wall above this
+STEER_GAIN = 2
+INSIDE_BAND_GAIN = 0.4  # gentle pull toward the band centre even inside it
+MAX_STEER_CORRECTION = 35
 
 # A side wall this close needs a real stop-and-move-away response, not just
 # waiting for the next decision tick.
@@ -281,7 +295,21 @@ class RightWallFollower:
                     ) * speed_scale
                 else:
                     forward_speed = FORWARD_SPEED
-                self.send(forward_speed, forward_speed)
+
+                # Light, always-on correction so the two motors' mismatch
+                # can't drift the heading unopposed - see RIGHT_NEAR_CM.
+                if right < RIGHT_NEAR_CM:
+                    error = right - RIGHT_NEAR_CM
+                    gain = STEER_GAIN
+                elif right > RIGHT_FAR_CM:
+                    error = right - RIGHT_FAR_CM
+                    gain = STEER_GAIN
+                else:
+                    error = right - (RIGHT_NEAR_CM + RIGHT_FAR_CM) / 2
+                    gain = INSIDE_BAND_GAIN
+                correction = clamp(error * gain,
+                                   -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION)
+                self.send(forward_speed + correction, forward_speed - correction)
 
             remaining = CONTROL_PERIOD - (time.monotonic() - started)
             if remaining > 0:
