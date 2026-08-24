@@ -33,10 +33,10 @@ def main():
     try:
         while not robot.shutdown_now:
             print(
-                f"dist_1={robot.get_dist_1():3d} /n "
-                f"dist_2={robot.get_dist_2():3d} /n "
-                f"dist_3={robot.get_dist_3():3d} /n "
-                f"dist_4={robot.get_dist_4():3d} /n",
+                f"dist_1={robot.get_dist_1():3d}  "
+                f"dist_2={robot.get_dist_2():3d}  "
+                f"dist_3={robot.get_dist_3():3d}  "
+                f"dist_4={robot.get_dist_4():3d}",
                 end="\r",
                 flush=True,
             )
