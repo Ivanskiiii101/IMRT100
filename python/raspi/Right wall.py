@@ -170,9 +170,11 @@ class RightWallFollower:
 
     def turn_right(self):
         self.stop()
-        # Move the wheel axle toward the centre of the junction before pivoting.
-        self.timed_drive(FORWARD_SPEED, FORWARD_SPEED,
-                         JUNCTION_ADVANCE_SECONDS)
+        # Move the wheel axle toward the centre of the junction before
+        # pivoting - sensor-checked, not blind, so a tight corner can't
+        # drive it further into the corner than there's actually room for
+        # before it starts turning from a bad position.
+        self._advance_while_clear(JUNCTION_ADVANCE_SECONDS, speed=FORWARD_SPEED)
         self._pivot(TURN_SPEED, -TURN_SPEED)
         # At an outside corner, the right sensor often still sees no wall
         # immediately after pivoting (nothing there yet), which would
@@ -201,13 +203,13 @@ class RightWallFollower:
             self.back_up_to_wall(BACKUP_SECONDS)
         self.turn_left()
 
-    def _advance_while_clear(self, duration):
+    def _advance_while_clear(self, duration, speed=MIN_FORWARD_SPEED):
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             centre = self.read_distances()[SENSOR_CENTRE]
             if centre <= FRONT_STOP_CM:
                 break
-            self.send(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED)
+            self.send(speed, speed)
             time.sleep(0.05)
         self.stop()
 
