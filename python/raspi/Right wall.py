@@ -119,6 +119,12 @@ RIGHT_NEAR_CM = 30      # steer away from the right wall below this
 RIGHT_FAR_CM = 50        # steer back toward the right wall above this
 LEFT_NEAR_CM = 30       # steer away from the left wall below this
 LEFT_FAR_CM = 70         # steer back toward the left wall above this
+# Left always contributes to steering (unlike right, it's not gated by
+# wall_acquired), so it needs its own cutoff: beyond this, there's no left
+# wall there at all to correct toward - most obviously in the open starting
+# bay - and treating "no wall" the same as "drifted away from one" was
+# commanding a hard, continuous steer toward nothing, right from tick one.
+LEFT_SENSE_CM = 120
 STEER_GAIN = 2
 INSIDE_BAND_GAIN = 0.4
 MAX_STEER_CORRECTION = 35
@@ -408,11 +414,16 @@ class RightWallFollower:
                 # Light, always-on correction so the two motors' mismatch
                 # can't drift the heading unopposed. Left always contributes
                 # (an acceptable range, not a fixed number - see
-                # LEFT_NEAR_CM/LEFT_FAR_CM). Right only contributes while
-                # actually tracking the wall; while searching, only left
-                # matters, so a still-far right reading doesn't fight the
-                # search.
-                if left < LEFT_NEAR_CM:
+                # LEFT_NEAR_CM/LEFT_FAR_CM) as long as there's actually a
+                # wall there to react to (LEFT_SENSE_CM) - open space, most
+                # obviously the starting bay, is not "drifted away from a
+                # wall," it's just open, and gets zero correction. Right
+                # only contributes while actually tracking the wall; while
+                # searching, only left matters, so a still-far right
+                # reading doesn't fight the search.
+                if left >= LEFT_SENSE_CM:
+                    left_contribution = 0.0
+                elif left < LEFT_NEAR_CM:
                     left_contribution = (LEFT_NEAR_CM - left) * STEER_GAIN
                 elif left > LEFT_FAR_CM:
                     left_contribution = (LEFT_FAR_CM - left) * STEER_GAIN
