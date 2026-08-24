@@ -1,44 +1,46 @@
 # Right-hand wall follower for IMRT100.
 #
-# Decision logic keeps the requested 3-sensor state machine (front/right/
-# left only - the rear sensor is intentionally never used for any decision)
-# exactly as given:
+# Clean rebuild combining everything confirmed across testing this project.
+# Core decision, per corridor tick, is simple by design:
 #
-#   front_blocked = sensor_front < threshold
-#   right_blocked = sensor_right < threshold
-#   not right_blocked      -> TURN_RIGHT
-#   not front_blocked      -> MOVE_FORWARD
-#   front_blocked and right_blocked -> TURN_LEFT
-#   else                   -> U_TURN (structurally unreachable, kept as a
-#                              defensive fallback)
+#   right sees a wall nearby  -> MOVE_FORWARD (front permitting)
+#   right sees no wall nearby -> TURN_RIGHT (a real opening)
+#   front blocked             -> TURN_LEFT (dead end)
 #
-# Two things were added on top, both informed by extensive testing this
-# project, without changing that structure:
-#   - front and right get their own threshold instead of one shared value -
-#     testing repeatedly found the front needs more stopping margin
-#     (~28-35cm) than the right-hug distance (~20cm) ever did
-#   - TURN_RIGHT/TURN_LEFT require the trigger to hold for a few consecutive
-#     ticks before being acted on (see run()) - reacting to a single sensor
-#     reading was directly responsible for false turns and full U-turns in
-#     earlier testing. MOVE_FORWARD needs no such debounce since it's the
-#     safe, reversible default; while a possible front-block is still
-#     unconfirmed, the robot pauses rather than driving forward into
-#     something that might be real - a genuine use for the "else" branch,
-#     which the original algorithm never reaches at all.
+# The one deliberate change from earlier attempts: this doesn't try to
+# actively hold a specific hug distance from the right wall at all - it just
+# drives straight whenever the wall isn't confirmed gone. That matters
+# because every earlier version that used one right-side threshold to mean
+# both "steer to stay this close" and "this counts as an opening" broke the
+# same way - normal hug-distance variation looked identical to a real
+# opening, so it kept trying to turn in the middle of an ordinary corridor.
+# With no hug-distance behaviour to protect, RIGHT_OPEN_CM only has one job:
+# tell a genuine opening apart from normal driving. It's set from an actual
+# test log where the robot stably read 26-90cm during ordinary (if erratic)
+# driving; a real opening should read far higher than that.
 #
-# Everything else here is just how each action is physically carried out:
+# Everything else here is infrastructure proven necessary by repeated
+# testing, not guesses:
 #   - sensor mapping confirmed by hand: dist_1=right, dist_2=left,
-#     dist_3=centre, dist_4=behind (behind is read but unused)
+#     dist_3=centre, dist_4=behind. The rear sensor is intentionally not
+#     used for any decision.
+#   - motor_1/motor_2 -> left/right wheel, positive = forward, confirmed
+#     directly on the robot with motor_direction_test.py
 #   - raw 255 readings right after a close reading are treated as still
 #     blocked, not as open space (ultrasonic sensors report 255 both for
 #     "nothing in range" and for an object closer than their minimum range)
+#   - readings are smoothed over the last 5 samples - sensors mounted close
+#     together can pick up a neighbour's echo for a tick or two
+#   - a turn/opening only counts once it holds for several consecutive
+#     ticks, not one reading - a single noisy sample was directly
+#     responsible for false turns and full spins in earlier testing
 #   - forward speed eases off approaching the front threshold instead of
-#     holding full speed to the last centimetre - "hits the wall too hard"
-#     was a repeated, concrete complaint in testing
-#   - a turn rotates in small increments, checking the front after each one,
-#     instead of committing to a fixed duration for a specific angle
-#   - motor_1/motor_2 -> left/right wheel, positive = forward, confirmed
-#     directly on the robot with motor_direction_test.py
+#     holding full speed to the last centimetre
+#   - a side wall closer than SIDE_STOP_CM gets an immediate stop-and-move-
+#     away response, since gentle driving-forward correction can't always
+#     avoid a wall that's already that close
+#   - a turn rotates in small increments, checking the front after each
+#     one, instead of committing to a fixed duration for a specific angle
 
 from collections import deque
 import statistics
@@ -51,30 +53,29 @@ import imrt_robot_serial
 SENSOR_RIGHT = 1
 SENSOR_LEFT = 2
 SENSOR_CENTRE = 3
-SENSOR_BEHIND = 4  # read but never used for a decision
+SENSOR_BEHIND = 4  # read by the protocol, never used for a decision here
 
 # Motor commands. The Arduino accepts -500 to +500.
 FORWARD_SPEED = 135
 MIN_FORWARD_SPEED = 90  # floor for the slowdown ramp - below this the
                          # motors likely can't overcome friction
 TURN_SPEED = 140
+BACKUP_SPEED = 120
 
-# Distance in centimetres below which a sensor counts as "a wall is there."
-# front_blocked/right_blocked in the original algorithm both used one shared
-# wall_threshold (0.20m); split here per the testing note above.
-FRONT_THRESHOLD_CM = 30
-# Raised from 20 - the log showed the robot stably hugging the right wall
-# at 26-29cm during normal driving, well above 20, so "right wall present"
-# was never true and it read every straight corridor as an opening.
-RIGHT_THRESHOLD_CM = 40
+# Front: distance in centimetres below which "something is directly ahead."
+FRONT_STOP_CM = 30
 # Start easing forward speed down from this far out, so it's already slow
-# by the time FRONT_THRESHOLD_CM is reached instead of braking abruptly.
+# by the time FRONT_STOP_CM is reached instead of braking abruptly.
 FRONT_SLOWDOWN_CM = 80
 
-# Require the trigger to hold for this many consecutive control-loop ticks
-# before actually committing to a turn - see the module docstring.
-RIGHT_OPEN_CONFIRM_SAMPLES = 3
-FRONT_BLOCK_CONFIRM_SAMPLES = 2
+# Right: a reading at or above this means the wall is genuinely gone. Set
+# well above the 26-90cm range seen during normal (if erratic) driving in
+# testing, and well below what an actual opening reads.
+RIGHT_OPEN_CM = 150
+
+# A side wall this close needs a real stop-and-move-away response, not just
+# waiting for the next decision tick.
+SIDE_STOP_CM = 10
 
 EXIT_OPEN_CM = 180
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
@@ -82,16 +83,20 @@ EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 # every sensor - ignore exit detection for this long after starting.
 START_GRACE_SECONDS = 5.0
 
+# Require the trigger to hold for this many consecutive control-loop ticks
+# before actually committing to a turn.
+RIGHT_OPEN_CONFIRM_SAMPLES = 3
+FRONT_BLOCK_CONFIRM_SAMPLES = 2
+
 # Raw sensor value (0-255) meaning "no echo received." Also happens when an
 # object is closer than the sensor's minimum range - see read_distances().
-# This and RECENT_CLOSE_CM only clean up raw sensor noise before it's
-# compared to the thresholds above; unrelated to the decision algorithm.
 SENSOR_NO_ECHO_RAW = 250
-RECENT_CLOSE_CM = 80
 
 CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7      # safety cap per turn (covers roughly 180 degrees)
+SIDE_AVOID_BACKUP_SECONDS = 0.10
+SIDE_AVOID_TURN_SECONDS = 0.15
 
 # Change either sign if a positive command drives that motor backwards.
 # Confirmed correct (motor_1=left, motor_2=right, positive=forward) with
@@ -104,22 +109,6 @@ def clamp(value, lower=-500, upper=500):
     return max(lower, min(upper, int(value)))
 
 
-def follow_right_wall(sensor_front, sensor_right, sensor_left):
-    # Same structure and priority as originally given, just with the split
-    # thresholds explained above.
-    front_blocked = sensor_front < FRONT_THRESHOLD_CM
-    right_blocked = sensor_right < RIGHT_THRESHOLD_CM
-
-    if not right_blocked:
-        return "TURN_RIGHT"
-    elif not front_blocked:
-        return "MOVE_FORWARD"
-    elif front_blocked and right_blocked:
-        return "TURN_LEFT"
-    else:
-        return "U_TURN"
-
-
 class RightWallFollower:
     def __init__(self, robot):
         self.robot = robot
@@ -129,8 +118,6 @@ class RightWallFollower:
         # one or two bad-in-a-row samples to actually move the result.
         self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
-        # Consecutive ticks the raw algorithm has suggested each turn - see
-        # the module docstring for why these gate acting on it.
         self.right_open_streak = 0
         self.front_blocked_streak = 0
 
@@ -147,13 +134,19 @@ class RightWallFollower:
             self.send(0, 0)
             time.sleep(0.05)
 
+    def timed_drive(self, motor_1, motor_2, duration):
+        end_time = time.monotonic() + duration
+        while time.monotonic() < end_time and not self.robot.shutdown_now:
+            self.send(motor_1, motor_2)
+            time.sleep(0.05)
+
     def rotate_until_clear(self, motor_1, motor_2):
         deadline = time.monotonic() + MAX_TURN_SECONDS
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             self.send(motor_1, motor_2)
             time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
-            if centre >= FRONT_THRESHOLD_CM:
+            if centre >= FRONT_STOP_CM:
                 break
         self.stop()
 
@@ -165,13 +158,16 @@ class RightWallFollower:
         self.stop()
         self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
 
-    def u_turn(self):
-        # Structurally unreachable from follow_right_wall (one of the first
-        # three branches always matches given a boolean front/right_blocked),
-        # kept only as a defensive fallback.
+    def avoid_side_wall(self, close_sensor):
+        # A side wall this close needs a real stop-and-move-away response,
+        # not just driving forward while waiting for the next decision.
         self.stop()
-        self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
-        self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
+        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
+        if close_sensor == SENSOR_LEFT:
+            self.timed_drive(TURN_SPEED, -TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
+        else:
+            self.timed_drive(-TURN_SPEED, TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
+        self.stop()
 
     def read_distances(self):
         raw = {
@@ -189,7 +185,7 @@ class RightWallFollower:
             # raw value.
             if value >= SENSOR_NO_ECHO_RAW and self.history[number]:
                 previous = statistics.median(self.history[number])
-                if previous < RECENT_CLOSE_CM:
+                if previous < FRONT_SLOWDOWN_CM:
                     value = 0
             self.history[number].append(value)
         return {
@@ -231,52 +227,53 @@ class RightWallFollower:
                 print("\nOpen finish area detected; robot stopped.")
                 return
 
-            # The raw algorithm's suggestion, unchanged from what was given.
-            raw_action = follow_right_wall(centre, right, left)
+            # A side wall this close overrides everything else - handle it
+            # immediately rather than waiting for the next normal decision.
+            if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
+                close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
+                print(f"\n>>> AVOID {'LEFT' if close_sensor == SENSOR_LEFT else 'RIGHT'} "
+                      f"at left={left:.0f} centre={centre:.0f} right={right:.0f}")
+                self.avoid_side_wall(close_sensor)
+                self.right_open_streak = 0
+                self.front_blocked_streak = 0
+                continue
+
+            right_open_now = right >= RIGHT_OPEN_CM
+            front_blocked_now = centre <= FRONT_STOP_CM
 
             self.right_open_streak = (
-                self.right_open_streak + 1 if raw_action == "TURN_RIGHT" else 0
+                self.right_open_streak + 1 if right_open_now else 0
             )
             self.front_blocked_streak = (
-                self.front_blocked_streak + 1 if centre < FRONT_THRESHOLD_CM
-                else 0
+                self.front_blocked_streak + 1 if front_blocked_now else 0
             )
 
-            if raw_action == "TURN_RIGHT" and self.right_open_streak < RIGHT_OPEN_CONFIRM_SAMPLES:
-                # Not confirmed yet - keep doing whatever's safe right now
-                # rather than committing to a turn off one reading.
-                action = "MOVE_FORWARD" if centre >= FRONT_THRESHOLD_CM else "PAUSE"
-            elif raw_action == "TURN_LEFT" and self.front_blocked_streak < FRONT_BLOCK_CONFIRM_SAMPLES:
-                action = "PAUSE"
-            else:
-                action = raw_action
-
-            if action == "TURN_RIGHT":
+            if self.right_open_streak >= RIGHT_OPEN_CONFIRM_SAMPLES:
                 print(f"\n>>> TURN_RIGHT at left={left:.0f} "
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.turn_right()
-            elif action == "TURN_LEFT":
+                continue
+
+            if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
                 print(f"\n>>> TURN_LEFT at left={left:.0f} "
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.turn_left()
-            elif action == "U_TURN":
-                print(f"\n>>> U_TURN at left={left:.0f} "
-                      f"centre={centre:.0f} right={right:.0f}")
-                self.right_open_streak = 0
-                self.front_blocked_streak = 0
-                self.u_turn()
-            elif action == "PAUSE":
+                continue
+
+            # Neither turn is confirmed yet. If the front is genuinely clear
+            # right now, keep driving; if it looks blocked but isn't
+            # confirmed, pause rather than risk driving into something that
+            # might be real.
+            if front_blocked_now:
                 self.send(0, 0)
-            else:  # MOVE_FORWARD
-                # Ease off speed approaching the front threshold instead of
-                # holding full speed to the last centimetre.
+            else:
                 if centre < FRONT_SLOWDOWN_CM:
-                    speed_scale = (centre - FRONT_THRESHOLD_CM) / (
-                        FRONT_SLOWDOWN_CM - FRONT_THRESHOLD_CM
+                    speed_scale = (centre - FRONT_STOP_CM) / (
+                        FRONT_SLOWDOWN_CM - FRONT_STOP_CM
                     )
                     speed_scale = max(0.0, min(1.0, speed_scale))
                     forward_speed = MIN_FORWARD_SPEED + (
