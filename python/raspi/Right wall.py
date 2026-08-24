@@ -123,6 +123,10 @@ START_GRACE_SECONDS = 5.0
 # before actually committing to a turn.
 RIGHT_OPEN_CONFIRM_SAMPLES = 3
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
+# Same idea for picking the wall back up after a junction turn - a single
+# reading was flipping wall_acquired straight back to True, right when the
+# heading is least settled and a stray reading is most likely.
+REACQUIRE_CONFIRM_SAMPLES = 3
 
 # Raw sensor value (0-255) meaning "no echo received." Also happens when an
 # object is closer than the sensor's minimum range - see read_distances().
@@ -168,6 +172,7 @@ class RightWallFollower:
         # is expected to read far and using it as a target would fight the
         # search instead of helping it.
         self.wall_acquired = True
+        self.reacquire_streak = 0
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -319,6 +324,7 @@ class RightWallFollower:
                       f"centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
+                self.reacquire_streak = 0
                 self.recent_right.clear()
                 self.turn_right()
                 # Now search: keep left at bay, don't chase a right target
@@ -335,10 +341,23 @@ class RightWallFollower:
                 continue
 
             # While searching (wall not yet acquired), picking the wall back
-            # up switches steering back to tracking it closely.
-            if not self.wall_acquired and right <= RIGHT_REACQUIRE_CM:
-                print(f"\n<<< right wall picked up again at right={right:.0f}")
-                self.wall_acquired = True
+            # up switches steering back to tracking it closely - but only
+            # once that holds for several ticks, not one reading. The
+            # heading is least settled right after a turn, so a single
+            # stray close reading here was flipping tracking back on before
+            # the robot was actually facing the new wall, and the resulting
+            # correction could itself swing right enough to look like a
+            # fresh "jump" - triggering an unwanted second turn.
+            if not self.wall_acquired:
+                if right <= RIGHT_REACQUIRE_CM:
+                    self.reacquire_streak += 1
+                else:
+                    self.reacquire_streak = 0
+                if self.reacquire_streak >= REACQUIRE_CONFIRM_SAMPLES:
+                    print(f"\n<<< right wall picked up again at right={right:.0f}")
+                    self.wall_acquired = True
+                    self.reacquire_streak = 0
+                    self.recent_right.clear()
 
             # Neither turn is confirmed yet. If the front is genuinely clear
             # right now, keep driving; if it looks blocked but isn't
