@@ -47,17 +47,9 @@ FRONT_STOP_CM = 35      # raised from 28 - triggers the stop/turn sooner,
                          # more margin before actually reaching the wall
 FRONT_SLOWDOWN_CM = 80   # raised to match - braking starts earlier and more
                          # gradually, instead of a late, abrupt slowdown
-# When only one side has a wall (the other reads ~255, open), actively hold
-# a target band from that lone wall instead of just reacting once it's
-# dangerously close - e.g. left=60, right=255 should keep tracking left at
-# roughly this range, through a turn if needed, until the other side picks
-# up a wall of its own again.
-SIDE_NEAR_CM = 20        # steer away from the lone wall below this
-SIDE_FAR_CM = 55         # steer back toward the lone wall above this
-SIDE_INSIDE_BAND_GAIN = 0.4  # gentle pull toward the band centre even inside
-                              # it - a hard zero would leave any inherent
-                              # motor mismatch to drift uncorrected, same
-                              # issue found tuning "Right wall.py"
+SIDE_TOO_CLOSE_CM = 25    # steer away if only one wall is this close - raised
+                         # so it reacts sooner now that the robot covers more
+                         # ground per control-loop tick at the higher speed
 CORRIDOR_SENSE_CM = 80    # ignore side readings farther than this for centring
 # Gentle steering correction alone can't always avoid a wall that's already
 # this close - it's a shallow arc while still moving forward, not an
@@ -409,42 +401,21 @@ class MazeNavigator:
 
             # Steer to stay roughly centred in the corridor. If both walls
             # are visible, balance the distance to each. If only one is,
-            # actively hold a target band from that lone wall - not just
-            # react once it's too close - so it keeps tracking it smoothly
-            # (through a turn if needed) until the other side finds a wall
-            # of its own again. Never a hard zero anywhere - a small
-            # mismatch between the two motors would otherwise go uncorrected
-            # and drift the heading over time.
+            # steer away from it once it gets too close. This is never a
+            # hard zero - a small mismatch between the two motors would
+            # otherwise go uncorrected and drift the heading over time.
             left_near = left < CORRIDOR_SENSE_CM
             right_near = right < CORRIDOR_SENSE_CM
             if left_near and right_near:
                 error = right - left
-                gain = STEER_GAIN
-            elif right_near:
-                if right < SIDE_NEAR_CM:
-                    error = right - SIDE_NEAR_CM
-                    gain = STEER_GAIN
-                elif right > SIDE_FAR_CM:
-                    error = right - SIDE_FAR_CM
-                    gain = STEER_GAIN
-                else:
-                    error = right - (SIDE_NEAR_CM + SIDE_FAR_CM) / 2
-                    gain = SIDE_INSIDE_BAND_GAIN
-            elif left_near:
-                if left < SIDE_NEAR_CM:
-                    error = SIDE_NEAR_CM - left
-                    gain = STEER_GAIN
-                elif left > SIDE_FAR_CM:
-                    error = SIDE_FAR_CM - left
-                    gain = STEER_GAIN
-                else:
-                    error = (SIDE_NEAR_CM + SIDE_FAR_CM) / 2 - left
-                    gain = SIDE_INSIDE_BAND_GAIN
+            elif right_near and right < SIDE_TOO_CLOSE_CM:
+                error = right - SIDE_TOO_CLOSE_CM
+            elif left_near and left < SIDE_TOO_CLOSE_CM:
+                error = SIDE_TOO_CLOSE_CM - left
             else:
                 error = 0
-                gain = STEER_GAIN
 
-            correction = clamp(error * gain,
+            correction = clamp(error * STEER_GAIN,
                                -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION)
             motor_1 = forward_speed + correction
             motor_2 = forward_speed - correction
