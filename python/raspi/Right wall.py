@@ -108,6 +108,10 @@ MAX_PIVOT_CORRECTION_SECONDS = 0.4
 # tight pocket - back up further, toward the rear wall, to get real room.
 STUCK_TURN_THRESHOLD = 2
 MAX_ESCAPE_BACKUP_SECONDS = 1.0
+# If still stuck after this many attempts in a row, stop instead of
+# spinning indefinitely - a real pocket with no room to back out of and no
+# working escape direction needs a person, not more turning.
+MAX_STUCK_ATTEMPTS = 6
 
 # How long to keep driving forward after a turn, trying to find the right
 # wall again, before giving up (the front-block check still applies the
@@ -144,6 +148,9 @@ class RightWallFollower:
         # Counts consecutive blocked-and-turn events with no forward driving
         # in between - see dead_end_turn().
         self.consecutive_blocked = 0
+        # Set when dead_end_turn() concludes it's genuinely stuck - see
+        # MAX_STUCK_ATTEMPTS.
+        self.give_up = False
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -205,12 +212,28 @@ class RightWallFollower:
         self.stop()
         self.consecutive_blocked += 1
 
+        if self.consecutive_blocked >= MAX_STUCK_ATTEMPTS:
+            self.stop()
+            self.give_up = True
+            print(
+                "\nGenuinely stuck after repeated attempts - stopping "
+                "instead of spinning indefinitely."
+            )
+            return
+
         if self.consecutive_blocked >= STUCK_TURN_THRESHOLD:
-            print("\nStuck in a pocket - backing up further to escape.")
+            print(f"\nStuck in a pocket (attempt {self.consecutive_blocked}) "
+                  "- backing up further to escape.")
             self.back_up_to_wall(MAX_ESCAPE_BACKUP_SECONDS)
+            # Repeating the same turn direction hasn't worked - alternate in
+            # case the actual way out is on the other side.
+            if self.consecutive_blocked % 2 == 0:
+                self.turn_right()
+            else:
+                self.turn_left()
         else:
             self.back_up_to_wall(BACKUP_SECONDS)
-        self.turn_left()
+            self.turn_left()
 
     def _steering_correction(self, right, left):
         # Outside the [RIGHT_NEAR_CM, RIGHT_FAR_CM] band, correct firmly.
@@ -328,7 +351,7 @@ class RightWallFollower:
         print("Right-wall follower running. Press Ctrl+C to stop.")
         started_at = time.monotonic()
 
-        while not self.robot.shutdown_now:
+        while not self.robot.shutdown_now and not self.give_up:
             started = time.monotonic()
             distances = self.read_distances()
             left = distances[SENSOR_LEFT]
