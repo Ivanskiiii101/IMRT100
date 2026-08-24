@@ -53,6 +53,30 @@
 # streak (still gated by FRONT_BLOCK_CONFIRM_SAMPLES, unchanged) actually
 # stops the robot to turn.
 #
+# A real test log also showed this: right after a junction turn (still
+# searching, wall not yet reacquired), right drifted to 8cm - under
+# SIDE_STOP_CM - and needed three AVOID_RIGHT emergency calls in a row to
+# get clear. Cause: search steering only ever reacted to left, by design,
+# so nothing opposed the right side getting that close until the hard
+# emergency stop, which isn't always enough in one try. Right now also
+# pushes away (same CLOSE-zone correction as normal tracking) if it drifts
+# inside RIGHT_NEAR_CM while searching - still zero at FAR/NORMAL, so a
+# still-distant right doesn't fight the search itself.
+#
+# Another real test showed TURN_RIGHT firing correctly (right had jumped to
+# a genuine opening) but the robot just kept driving straight afterward
+# instead of turning - it drove on down the old corridor until it hit the
+# wall at the end. turn_right() is a blind, fixed-duration pivot with no
+# verification that the robot actually turned, unlike turn_left(), which
+# keeps checking the front sensor while it rotates. Right had been hugging
+# 14-15cm - tighter than the normal tracking band - right up until the
+# turn fired, meaning the pivot started with the chassis already close
+# enough to the wall to catch a corner on it: the motors still get
+# commanded for the full RIGHT_TURN_SECONDS regardless, but a caught corner
+# means the heading doesn't actually change. turn_right() now backs up
+# briefly first, the same defensive move avoid_side_wall() already uses,
+# so the pivot always starts with clearance.
+#
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
 #   - sensor mapping confirmed by hand: dist_1=right, dist_2=left,
@@ -299,8 +323,20 @@ class RightWallFollower:
         self.stop()
 
     def turn_right(self):
-        # Fixed duration, not condition-based - see module docstring.
+        # Fixed duration, not condition-based - see module docstring. Backs
+        # up first: by definition the robot has been hugging the right wall
+        # right up until this fires, so pivoting immediately can catch a
+        # chassis corner on that same wall. The motors still get commanded
+        # for the full RIGHT_TURN_SECONDS either way - this has no
+        # verification that the robot actually turned, unlike turn_left,
+        # which keeps checking the front sensor while it rotates - so a
+        # caught corner means the robot silently keeps facing the old
+        # corridor and just drives on down it. A real test showed exactly
+        # this: TURN_RIGHT fired right after right had been reading 14-15cm
+        # (tighter than the normal tracking band) for a while, and the
+        # robot kept driving straight afterward instead of turning.
         self.stop()
+        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
         self.timed_drive(TURN_SPEED, -TURN_SPEED, RIGHT_TURN_SECONDS)
         self.stop()
 
@@ -531,6 +567,20 @@ class RightWallFollower:
                 )
 
             if self.wall_acquired:
+                right_zone, right_contribution = band_contribution(
+                    right, RIGHT_NEAR_CM, RIGHT_FAR_CM, sign=1
+                )
+            elif right < RIGHT_NEAR_CM:
+                # Not tracking the wall yet, but right has drifted
+                # dangerously close anyway - proven to happen right after a
+                # junction turn, before the wall's been picked back up.
+                # Normal search steering only reacts to left, by design, so
+                # nothing was opposing this until SIDE_STOP_CM's hard
+                # emergency stop - which isn't always enough in one try (a
+                # real test needed three AVOID_RIGHT calls in a row here).
+                # Reuse the same CLOSE-zone push-away right tracking already
+                # uses once acquired; FAR/NORMAL still get zero so a
+                # still-distant right doesn't fight the search.
                 right_zone, right_contribution = band_contribution(
                     right, RIGHT_NEAR_CM, RIGHT_FAR_CM, sign=1
                 )
