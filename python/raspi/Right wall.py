@@ -133,6 +133,14 @@ MAX_STEER_CORRECTION = 35
 # waiting for the next decision tick.
 SIDE_STOP_CM = 10
 
+# Safety net: if a dead-end (TURN_LEFT) fires this many times in a row with
+# no successful forward driving in between, stop instead of continuing to
+# turn - repeated dead-end turns compounding into a full spin that walks
+# the robot back the way it came is the single worst failure mode seen
+# testing this, and it's cheap to guard against outright regardless of
+# what ends up causing it.
+MAX_CONSECUTIVE_DEAD_ENDS = 4
+
 EXIT_OPEN_CM = 180
 EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
 # A spacious starting bay can read just as open as the real finish area on
@@ -204,6 +212,12 @@ class RightWallFollower:
         # for the rest of the run - every future blocked front then fell
         # through to TURN_LEFT with no way to ever turn right again.
         self.has_ever_found_wall = False
+        # Counts consecutive TURN_LEFT (dead end) turns with no successful
+        # forward driving in between - see MAX_CONSECUTIVE_DEAD_ENDS.
+        self.consecutive_dead_ends = 0
+        # Set when that cap is hit - stops run() rather than continuing to
+        # turn indefinitely.
+        self.give_up = False
 
     def send(self, motor_1, motor_2):
         self.robot.send_command(
@@ -286,7 +300,7 @@ class RightWallFollower:
         print("Right-wall follower running. Press Ctrl+C to stop.")
         started_at = time.monotonic()
 
-        while not self.robot.shutdown_now:
+        while not self.robot.shutdown_now and not self.give_up:
             started = time.monotonic()
             distances = self.read_distances()
             left = distances[SENSOR_LEFT]
@@ -359,6 +373,7 @@ class RightWallFollower:
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.reacquire_streak = 0
+                self.consecutive_dead_ends = 0
                 self.recent_right.clear()
                 self.turn_right()
                 # Now search: keep left at bay, don't chase a right target
@@ -367,8 +382,40 @@ class RightWallFollower:
                 continue
 
             if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
-                print(f"\n>>> TURN_LEFT (dead end) at left={left:.0f} "
-                      f"centre={centre:.0f} right={right:.0f}")
+                if right_open_now:
+                    # The front confirmed first purely because it needs
+                    # fewer samples (FRONT_BLOCK_CONFIRM_SAMPLES <
+                    # RIGHT_OPEN_CONFIRM_SAMPLES), not because this is
+                    # actually a dead end - a real right-turn junction
+                    # naturally has the front closing in at the same time
+                    # the right opens up, so front almost always wins that
+                    # race. Once we're definitely at a decision point (front
+                    # blocked), trust a single strong right-open reading
+                    # immediately instead of waiting for its own full streak.
+                    print(f"\n>>> TURN_RIGHT (junction, front also closing) "
+                          f"at left={left:.0f} centre={centre:.0f} "
+                          f"right={right:.0f}")
+                    self.right_open_streak = 0
+                    self.front_blocked_streak = 0
+                    self.reacquire_streak = 0
+                    self.consecutive_dead_ends = 0
+                    self.recent_right.clear()
+                    self.turn_right()
+                    self.wall_acquired = False
+                    continue
+                self.consecutive_dead_ends += 1
+                if self.consecutive_dead_ends > MAX_CONSECUTIVE_DEAD_ENDS:
+                    self.stop()
+                    self.give_up = True
+                    print(
+                        "\n>>> Stopping: "
+                        f"{MAX_CONSECUTIVE_DEAD_ENDS} dead-end turns in a "
+                        "row with no forward progress."
+                    )
+                    continue
+                print(f"\n>>> TURN_LEFT (dead end, "
+                      f"{self.consecutive_dead_ends}/{MAX_CONSECUTIVE_DEAD_ENDS}) "
+                      f"at left={left:.0f} centre={centre:.0f} right={right:.0f}")
                 self.right_open_streak = 0
                 self.front_blocked_streak = 0
                 self.turn_left()
@@ -400,6 +447,8 @@ class RightWallFollower:
             if front_blocked_now:
                 self.send(0, 0)
             else:
+                # Made it back to normal forward driving - no longer stuck.
+                self.consecutive_dead_ends = 0
                 if centre < FRONT_SLOWDOWN_CM:
                     speed_scale = (centre - FRONT_STOP_CM) / (
                         FRONT_SLOWDOWN_CM - FRONT_STOP_CM
