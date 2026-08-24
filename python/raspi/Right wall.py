@@ -51,7 +51,11 @@ FRONT_STOP_CM = 35
 FRONT_SLOWDOWN_CM = 80
 RIGHT_NEAR_CM = 20      # steer away from the wall below this
 RIGHT_FAR_CM = 55       # steer back toward the wall above this
-RIGHT_OPEN_CM = 75      # sustained reading above this means a real junction
+# Only a near-total loss of the right wall counts as a real opening - a
+# tight pinch on the left is not a reason to turn on its own. This is
+# effectively "right reads 255 (no echo)", with a little tolerance for
+# smoothing.
+RIGHT_OPEN_CM = 250
 EXIT_OPEN_CM = 180
 REAR_CLEARANCE_CM = 15
 # A side wall this close needs a real stop-and-move-away response, not just
@@ -66,7 +70,6 @@ SENSOR_NO_ECHO_RAW = 250
 CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout
 TURN_SECONDS = 0.85
 JUNCTION_ADVANCE_SECONDS = 0.25
-POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
 SIDE_AVOID_BACKUP_SECONDS = 0.10
 SIDE_AVOID_TURN_SECONDS = 0.15
@@ -96,11 +99,10 @@ MAX_PIVOT_CORRECTION_SECONDS = 0.4
 STUCK_TURN_THRESHOLD = 2
 MAX_ESCAPE_BACKUP_SECONDS = 1.0
 
-# If the left or centre distance drops at least this much from its recent
-# minimum, the robot has gotten close to a wall on that side - a strong sign
-# it's swinging around a corner as the right wall opens up. Treat that as
-# extra confirmation of a real junction, on top of RIGHT_OPEN_CM.
-WALL_APPROACH_DROP_CM = 15
+# How long to keep driving forward after a turn, trying to find the right
+# wall again, before giving up (the front-block check still applies the
+# whole time, so this is a safety cap, not the expected case).
+MAX_POST_TURN_SECONDS = 2.0
 
 # Change either sign if a positive command drives that motor backwards.
 # Confirmed correct (motor_1=left, motor_2=right, positive=forward) with
@@ -129,8 +131,6 @@ class RightWallFollower:
         # open bay) it just means there's nothing there yet, and reflexively
         # turning right in a loop is wrong.
         self.wall_acquired = False
-        self.recent_left = deque(maxlen=5)
-        self.recent_centre = deque(maxlen=5)
         # Counts consecutive blocked-and-turn events with no forward driving
         # in between - see dead_end_turn().
         self.consecutive_blocked = 0
@@ -175,22 +175,21 @@ class RightWallFollower:
         # drive it further into the corner than there's actually room for
         # before it starts turning from a bad position.
         self._advance_while_clear(JUNCTION_ADVANCE_SECONDS, speed=FORWARD_SPEED)
+        # Check the rear before pivoting, same as a dead end - there can be
+        # a wall close behind at a junction too, and backing off it first
+        # (only if there's actually room) gives the pivot more clearance.
+        self.back_up_to_wall(BACKUP_SECONDS)
         self._pivot(TURN_SPEED, -TURN_SPEED)
         # At an outside corner, the right sensor often still sees no wall
-        # immediately after pivoting (nothing there yet), which would
-        # otherwise re-trigger another right turn on the very next reading -
-        # several in a row is a full spin in place. Advance into the new
-        # corridor first so the right sensor gets a chance to find its wall.
-        # This keeps checking the front the whole time instead of driving a
-        # fixed duration blind - a turn can end up here either because it
-        # found a clear front, or because its correction loop simply ran out
-        # of time without ever confirming clear.
-        self._advance_while_clear(POST_TURN_ADVANCE_SECONDS)
+        # immediately after pivoting (nothing there yet). Keep driving
+        # forward - checking the front the whole time - until it actually
+        # picks the right wall back up, instead of a fixed short advance.
+        self._advance_until_wall_found()
 
     def turn_left(self):
         self.stop()
         self._pivot(-TURN_SPEED, TURN_SPEED)
-        self._advance_while_clear(POST_TURN_ADVANCE_SECONDS)
+        self._advance_until_wall_found()
 
     def dead_end_turn(self, behind):
         self.stop()
@@ -210,6 +209,22 @@ class RightWallFollower:
             if centre <= FRONT_STOP_CM:
                 break
             self.send(speed, speed)
+            time.sleep(0.05)
+        self.stop()
+
+    def _advance_until_wall_found(self):
+        # After a turn, open space ahead means keep driving forward - not
+        # for a fixed short burst, but until the right sensor actually picks
+        # the wall back up (or the front blocks first). MAX_POST_TURN_SECONDS
+        # is only a safety cap.
+        deadline = time.monotonic() + MAX_POST_TURN_SECONDS
+        while time.monotonic() < deadline and not self.robot.shutdown_now:
+            distances = self.read_distances()
+            centre = distances[SENSOR_CENTRE]
+            right = distances[SENSOR_RIGHT]
+            if centre <= FRONT_STOP_CM or right <= RIGHT_FAR_CM:
+                break
+            self.send(MIN_FORWARD_SPEED, MIN_FORWARD_SPEED)
             time.sleep(0.05)
         self.stop()
 
@@ -305,31 +320,14 @@ class RightWallFollower:
             if right < RIGHT_OPEN_CM:
                 self.wall_acquired = True
 
-            # A sharp drop in the left or centre distance is a strong sign
-            # we're swinging around a corner as the right wall opens up.
-            # Noisy right readings alone often don't sustain above
-            # RIGHT_OPEN_CM long enough to confirm a real junction on their
-            # own, so use these as corroborating evidence.
-            left_confirms_turn = (
-                len(self.recent_left) == self.recent_left.maxlen
-                and left <= min(self.recent_left) - WALL_APPROACH_DROP_CM
-            )
-            centre_confirms_turn = (
-                len(self.recent_centre) == self.recent_centre.maxlen
-                and centre <= min(self.recent_centre) - WALL_APPROACH_DROP_CM
-            )
-            self.recent_left.append(left)
-            self.recent_centre.append(centre)
-
-            # Right-hand priority: turn right whenever a real opening persists
-            # in a wall we were already following. Before any wall has been
+            # Right-hand priority: turn right whenever the right wall is
+            # essentially gone (reads ~255, no echo) and persists that way -
+            # not just "far", so a tight pinch on the left (or anywhere else)
+            # never triggers a turn on its own. Before any wall has been
             # found, an open right reading just means there's nothing there
             # yet - drive forward and let the wall-following correction below
             # steer toward the first wall it finds instead of spinning here.
-            right_looks_open = right >= RIGHT_OPEN_CM
-            if self.wall_acquired and (
-                right_looks_open or left_confirms_turn or centre_confirms_turn
-            ):
+            if self.wall_acquired and right >= RIGHT_OPEN_CM:
                 self.right_open_count += 1
             else:
                 self.right_open_count = 0
