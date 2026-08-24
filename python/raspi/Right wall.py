@@ -77,6 +77,20 @@
 # briefly first, the same defensive move avoid_side_wall() already uses,
 # so the pivot always starts with clearance.
 #
+# That backup fix alone didn't stop the reported "does a 360 and ends up
+# back at the same spot" - because that particular failure was never in
+# turn_right() at all. It was rotate_until_clear(), which turn_left() (the
+# dead-end recovery) uses: it stopped rotating on a single raw reading
+# >=FRONT_STOP_CM, with no confirm-samples debounce at all, unlike every
+# other decision in this file. One noisy "clear" tick mid-rotation was
+# enough to end the turn early, before the robot had actually turned clear
+# - so the next control-loop tick immediately redetected BLOCKED and fired
+# another dead-end turn. Several of these small under-rotations in a row
+# add up to something close to a full 360, ending up facing back the way
+# it came - exactly the reported symptom. Now requires
+# FRONT_CLEAR_CONFIRM_SAMPLES consecutive clear ticks before it stops,
+# symmetric with how BLOCKED itself is entered.
+#
 # Everything else here is infrastructure proven necessary by repeated
 # testing, not guesses:
 #   - sensor mapping confirmed by hand: dist_1=right, dist_2=left,
@@ -197,6 +211,13 @@ FRONT_BLOCK_CONFIRM_SAMPLES = 2
 # reading was flipping wall_acquired straight back to True, right when the
 # heading is least settled and a stray reading is most likely.
 REACQUIRE_CONFIRM_SAMPLES = 3
+# Same idea again for rotate_until_clear() ending a dead-end turn - a single
+# raw reading was letting the turn stop rotating on one noisy "clear" tick,
+# well before the robot had actually turned clear of the obstruction. The
+# very next control-loop tick then immediately redetected BLOCKED and fired
+# another dead-end turn - repeated small under-rotations compounding into
+# something close to a full 360, ending up facing back the way it came.
+FRONT_CLEAR_CONFIRM_SAMPLES = 3
 
 # Raw sensor value (0-255) meaning "no echo received." Also happens when an
 # object is closer than the sensor's minimum range - see read_distances().
@@ -312,13 +333,21 @@ class RightWallFollower:
     def rotate_until_clear(self, motor_1, motor_2):
         # Meaningful for the dead-end turn: the front was genuinely blocked
         # to start with, so "front clears" is a real signal of having
-        # turned away from the obstruction.
+        # turned away from the obstruction - but only once it holds for
+        # several ticks, not one reading, symmetric with how BLOCKED itself
+        # is entered (FRONT_BLOCK_CONFIRM_SAMPLES). A single noisy "clear"
+        # tick mid-rotation was stopping the turn before the robot had
+        # actually turned clear, so the very next tick immediately
+        # redetected BLOCKED and fired another dead-end turn - see
+        # FRONT_CLEAR_CONFIRM_SAMPLES.
         deadline = time.monotonic() + MAX_TURN_SECONDS
+        clear_streak = 0
         while time.monotonic() < deadline and not self.robot.shutdown_now:
             self.send(motor_1, motor_2)
             time.sleep(TURN_STEP_SECONDS)
             centre = self.read_distances()[SENSOR_CENTRE]
-            if centre >= FRONT_STOP_CM:
+            clear_streak = clear_streak + 1 if centre >= FRONT_STOP_CM else 0
+            if clear_streak >= FRONT_CLEAR_CONFIRM_SAMPLES:
                 break
         self.stop()
 
