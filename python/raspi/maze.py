@@ -34,8 +34,14 @@ SENSOR_CENTRE = 3
 SENSOR_BEHIND = 4
 
 # Motor commands. The Arduino accepts -500 to +500.
-FORWARD_SPEED = 135  # was 150, cut another 10% - stopping was too slow and
-                     # getting too close to the wall
+# 135 * 1.10 = 148.5, rounded up to 149 for a genuine 10% increase, not
+# slightly under. Note this lands almost exactly back on 150, which was
+# cut to 135 earlier because stopping was too slow and got too close to
+# the wall - CONTROL_PERIOD below is tightened to compensate (same
+# distance covered per control-loop tick as before, not more), but the
+# FRONT_STOP_CM/FRONT_SLOWDOWN_CM margins that fixed it back then are
+# unchanged, not re-verified at this speed. Watch this on the first test.
+FORWARD_SPEED = 149
 MIN_FORWARD_SPEED = 90  # below this the motors likely can't overcome friction
 TURN_SPEED = 140
 BACKUP_SPEED = 120
@@ -64,9 +70,15 @@ REAR_CLEARANCE_CM = 15
 SENSOR_NO_ECHO_RAW = 250
 
 # Timing values that must be calibrated with Venusaur mounted.
-CONTROL_PERIOD = 0.08       # 12.5 Hz; safely inside Arduino's 500 ms timeout.
-                             # Tighter than 0.10 since more distance is
-                             # covered per tick at the higher FORWARD_SPEED.
+# 0.08 was already tightened once for this reason, so the same logic
+# applies again: 135*0.08=10.8 (speed*period); holding that product
+# roughly constant at the new FORWARD_SPEED=149 gives 10.8/149=0.0725,
+# rounded down (tighter, not looser) to 0.07 - the robot covers about the
+# same distance per control-loop tick as before, not more, so the
+# FRONT_STOP_CM/FRONT_SLOWDOWN_CM braking zone gets the same number of
+# reaction ticks to work with as it did at 135. Still safely inside the
+# Arduino's 500 ms timeout.
+CONTROL_PERIOD = 0.07       # 14.3 Hz
 POST_TURN_ADVANCE_SECONDS = 0.35
 BACKUP_SECONDS = 0.2
 SIDE_AVOID_BACKUP_SECONDS = 0.10  # timed_drive resends every 0.05s, so this
@@ -79,7 +91,7 @@ SIDE_AVOID_TURN_SECONDS = 0.15
 # gets more time/distance to work before trusting full speed again.
 TURN_COOLDOWN_SECONDS = 1.0
 TURN_COOLDOWN_SPEED = MIN_FORWARD_SPEED + 30
-EXIT_CONFIRM_SAMPLES = 12   # 1.2 seconds of open space
+EXIT_CONFIRM_SAMPLES = 12   # 12 * CONTROL_PERIOD =~ 0.84 seconds of open space
 # A spacious starting bay can read just as open as the real finish area on
 # every sensor - ignore exit detection for this long after starting, so the
 # robot actually gets moving into the maze before it's ever checked.
