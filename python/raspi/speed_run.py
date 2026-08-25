@@ -76,15 +76,16 @@ CRUISE_SPEED = 210      # was 230, dialed back down - 190 was the last
 TURN_SPEED = 170
 BACKUP_SPEED = 120
 
-# Raised from 35 - CRUISE_SPEED has grown from 150 to 230 (1.5x) since
-# this was set, and this is physical stopping distance, not reaction
-# time: even with zero-latency reaction, a faster-moving robot needs more
-# real distance to actually halt once the motors cut. Tightening
-# CONTROL_PERIOD (reaction time) already got applied twice for the
-# CRUISE_SPEED increases and stopped helping - the U-turn at 230 kept
-# happening with the exact same reaction-distance ratio that worked fine
-# at 190, which is what points at momentum/braking distance instead.
-FRONT_STOP_CM = 50
+# This is also where bounce_off_front() decides which way to turn (reads
+# left/right right after triggering), so it doubles as "how close before
+# comparing sides at a junction" - too far out and a small opening hasn't
+# actually come into view yet, so the direction choice is a guess. Pulled
+# back down from 50 toward the original 35 for that reason, but not all
+# the way: 50 was sized for CRUISE_SPEED's momentum (now 210, still
+# faster than the 150 that 35 was originally set for), so this trades
+# some of that stopping margin back for a closer, more accurate look
+# before turning. Worth watching for more front contact than before.
+FRONT_STOP_CM = 40
 # Back down from 16 to 12: that was sized for CRUISE_SPEED=230, which got
 # dialed back to 210, so it was more cautious than the current speed
 # needs - and, separately, it had no debounce at all (unlike front, which
