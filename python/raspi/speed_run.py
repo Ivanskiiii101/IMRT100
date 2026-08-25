@@ -1,42 +1,33 @@
-# speed_run.py - IMRT100 maze solver.
+# speed_run.py - IMRT100 maze solver, robot-vacuum style.
 #
-# Strategy: right-hand wall following. It's not the shortest possible path
-# through the maze, but it's guaranteed to reach the exit as long as the
-# maze is simply connected (every wall traces back to the outer boundary,
-# true here), and it only needs the three front-facing sensors - no memory
-# of the maze layout, no mapping pass. That combination is what makes it
-# fast to actually finish a run instead of fast in theory.
+# No wall-following, no corridor-centring, no continuous steering math -
+# just drive straight until something is close, then react:
+#   - front close -> stop, back up, turn toward whichever side has more
+#     room, keep driving
+#   - either side close -> stop, back up, nudge away, keep driving
+# A junction, a dead end, and a plain wall dead ahead all just look like
+# "front is close" here, so there's no separate junction-vs-dead-end
+# decision to get wrong - one reaction covers all of them. Drift toward a
+# wall on a straight stretch gets corrected the same way any other
+# obstacle does: it's just a "side got close" event.
 #
-# Hardware, confirmed by direct testing on this robot (not assumed from
-# labels): dist_1 = right sensor, dist_2 = left, dist_3 = front, dist_4 =
-# rear - the rear sensor is read but never used for a decision. motor_1 =
-# left wheel, motor_2 = right wheel, positive command = forward.
+# Hardware, confirmed by direct testing on this robot:
+#   dist_1 = right sensor, dist_2 = left, dist_3 = front, dist_4 = rear
+#   (rear is read but never used for a decision)
+#   motor_1 = left wheel, motor_2 = right wheel, positive = forward
 #
-# The sensors are noisy - readings jump around with nothing physically
-# changing - so every decision here is a named zone confirmed over several
-# consecutive ticks, never a single raw reading:
-#   - CLOSE/NORMAL/FAR zones on each side drive steering; a reading right
-#     at a boundary just moves into the neighbouring zone's behaviour
-#   - CLEAR/SLOW/BLOCKED zones on the front drive speed; an unconfirmed
-#     BLOCKED reading crawls at the slowdown floor instead of stopping
-#     outright, so noise near that boundary can't stall the robot
-#   - a junction (right opening up) and a dead end (front closing in) each
-#     need to hold for several ticks before being trusted, and picking the
-#     wall back up after a turn does too - a single stray reading in any
-#     of these was enough to cause a false turn in earlier testing
-#   - turning left out of a dead end only stops once several consecutive
-#     ticks confirm the front is clear, not one - a single lucky reading
-#     stops the turn before the robot has actually turned clear, and the
-#     very next tick re-triggers another turn; several of those in a row
-#     compound into something that looks like a full spin
-#   - turning right at a junction backs away from the wall before pivoting,
-#     since that turn fires exactly when the robot is hugging closest to
-#     it and can otherwise catch a corner on the wall mid-turn
-#   - there is exactly one turn per detected event, never a retry loop -
-#     retries that turn further on each attempt are what caused full spins
-#     in earlier testing, independent of any single-reading bug
-#
-# Everything above came from repeated on-robot testing, not guesses.
+# Two things kept from testing the wall-following versions of this file,
+# because dropping them caused real, repeatable failures on this robot:
+#   - a close/blocked reading needs a couple of confirmed consecutive
+#     ticks, not one - these ultrasonic sensors are noisy enough that a
+#     single reading was enough to trigger a false bounce
+#   - a turn only ends once the front reads clear for several consecutive
+#     ticks, not one - ending it on a single lucky reading stops the turn
+#     before the robot has actually turned clear, so the very next tick
+#     immediately re-triggers another turn; a few of those in a row look
+#     like the robot spinning in place and ending up back where it started
+# Everything else is intentionally as simple as it can be - no threads,
+# no zones, no smooth speed ramp. One speed, a couple of thresholds.
 
 from collections import deque
 import statistics
@@ -46,7 +37,6 @@ import time
 import imrt_robot_serial
 
 
-# --- Hardware mapping (confirmed on this robot) ---------------------------
 SENSOR_RIGHT = 1
 SENSOR_LEFT = 2
 SENSOR_FRONT = 3
@@ -55,105 +45,52 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-# --- Speed (Arduino accepts -500..500) -------------------------------------
-CRUISE_SPEED = 135
-MIN_FORWARD_SPEED = 90  # floor for the slowdown ramp and unconfirmed BLOCKED
+CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 
-# --- Front zones -----------------------------------------------------------
-FRONT_STOP_CM = 30
-FRONT_SLOWDOWN_CM = 80
+FRONT_STOP_CM = 35
+# A bit more clearance than a dead-ahead stop needs: with no slowdown
+# ramp, there's nothing nudging the robot away from a side wall early -
+# this is the only side defence there is.
+SIDE_STOP_CM = 12
+NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
-# --- Right: junction detection is separate from hug-distance tracking,
-# since reusing one threshold for both made normal hug variation
-# indistinguishable from a real opening. --------------------------------
-RIGHT_OPEN_CM = 150
-RIGHT_JUMP_CM = 60       # a sudden rise from the recent minimum also counts
-RIGHT_REACQUIRE_CM = 90  # counts as "found the wall again" after a turn
-RIGHT_TURN_SECONDS = 0.85  # fixed-duration junction pivot - tune on the robot
+FRONT_BLOCK_CONFIRM_SAMPLES = 2
+FRONT_CLEAR_CONFIRM_SAMPLES = 3  # symmetric with the above - see docstring
 
-RIGHT_NEAR_CM = 30
-RIGHT_FAR_CM = 50
-LEFT_NEAR_CM = 30
-LEFT_FAR_CM = 70
-LEFT_SENSE_CM = 120  # beyond this there's no left wall to correct toward
-STEER_GAIN = 2
-INSIDE_BAND_GAIN = 0.4  # gentle pull inside the band - never a hard zero,
-                         # or the two motors' mismatch drifts unopposed
-MAX_STEER_CORRECTION = 35
+BACKUP_SECONDS = 0.2
+STUCK_BACKUP_SECONDS = 0.6   # a bigger backup once bouncing repeatedly
+STUCK_THRESHOLD = 2          # with no forward progress in between
+MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 
-SIDE_STOP_CM = 10  # closer than this needs an immediate stop-and-move-away
-MAX_CONSECUTIVE_DEAD_ENDS = 4  # safety cap: give up rather than spin forever
+SIDE_AVOID_BACKUP_SECONDS = 0.10
+SIDE_AVOID_TURN_SECONDS = 0.15
+
+TURN_STEP_SECONDS = 0.05
+MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
 EXIT_OPEN_CM = 180
 EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
-RIGHT_OPEN_CONFIRM_SAMPLES = 3
-FRONT_BLOCK_CONFIRM_SAMPLES = 2
-FRONT_CLEAR_CONFIRM_SAMPLES = 3  # symmetric with FRONT_BLOCK_CONFIRM_SAMPLES
-REACQUIRE_CONFIRM_SAMPLES = 3
-
-SENSOR_NO_ECHO_RAW = 250  # 255 means "no echo" - also happens when an
-                          # object is closer than the sensor's minimum range
-
-CONTROL_PERIOD = 0.08     # 12.5 Hz - inside the Arduino's 500ms timeout
-TURN_STEP_SECONDS = 0.05
-MAX_TURN_SECONDS = 1.7    # safety cap for the dead-end turn only
-SIDE_AVOID_BACKUP_SECONDS = 0.10
-SIDE_AVOID_TURN_SECONDS = 0.15
+SENSOR_NO_ECHO_RAW = 250
+CONTROL_PERIOD = 0.06
 
 
 def clamp(value, lower=-500, upper=500):
     return max(lower, min(upper, int(value)))
 
 
-def classify_front(front):
-    if front <= FRONT_STOP_CM:
-        return "BLOCKED"
-    if front < FRONT_SLOWDOWN_CM:
-        return "SLOW"
-    return "CLEAR"
-
-
-def band_contribution(value, near, far, sign):
-    # Classifies a side reading into CLOSE/NORMAL/FAR and returns both the
-    # zone and the steering contribution. sign=+1 for the right sensor,
-    # sign=-1 for the left - same zones, mirrored correction direction.
-    mid = (near + far) / 2
-    if value < near:
-        zone, error, gain = "CLOSE", value - near, STEER_GAIN
-    elif value > far:
-        zone, error, gain = "FAR", value - far, STEER_GAIN
-    else:
-        zone, error, gain = "NORMAL", value - mid, INSIDE_BAND_GAIN
-    return zone, sign * error * gain
-
-
 class MazeSolver:
     def __init__(self, robot):
         self.robot = robot
-        # maxlen=5: sensors mounted close together can pick up a
-        # neighbour's echo for a tick or two - a wider median window needs
-        # more than one bad sample in a row to move the result.
         self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
-        self.right_open_streak = 0
         self.front_blocked_streak = 0
-        self.recent_right = deque(maxlen=5)
-        # Toggles per turn: True while actively tracking the right wall
-        # closely, False while searching for it again after a junction.
-        self.wall_acquired = False
-        self.reacquire_streak = 0
-        # One-way latch, separate from wall_acquired: once true, stays
-        # true for the rest of the run. Gates junction detection so the
-        # open starting bay can't be misread as "the wall just opened up" -
-        # and, unlike wall_acquired, is never reset by a dead-end turn, so
-        # one dead end early on can't permanently disable right turns.
-        self.has_ever_found_wall = False
-        self.consecutive_dead_ends = 0
-        self.give_up = False
+        # Consecutive bounces with no successful forward driving in
+        # between - not reset until a normal driving tick happens.
+        self.consecutive_blocked = 0
 
     def send(self, left, right):
         self.robot.send_command(
@@ -183,17 +120,24 @@ class MazeSolver:
                 break
         self.stop()
 
-    def turn_right(self):
+    def bounce_off_front(self):
         self.stop()
-        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
-        self.timed_drive(TURN_SPEED, -TURN_SPEED, RIGHT_TURN_SECONDS)
-        self.stop()
+        backup = (
+            STUCK_BACKUP_SECONDS
+            if self.consecutive_blocked >= STUCK_THRESHOLD
+            else BACKUP_SECONDS
+        )
+        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
 
-    def turn_left(self):
-        self.stop()
-        self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
+        distances = self.read_distances()
+        left = distances[SENSOR_LEFT]
+        right = distances[SENSOR_RIGHT]
+        if right >= left:
+            self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
+        else:
+            self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
 
-    def avoid_side_wall(self, close_sensor):
+    def bounce_off_side(self, close_sensor):
         self.stop()
         self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
         if close_sensor == SENSOR_LEFT:
@@ -210,12 +154,12 @@ class MazeSolver:
             4: self.robot.get_dist_4(),
         }
         for number, value in raw.items():
-            # A jump to "no echo" right after a close reading almost always
-            # means the object is now too close to measure, not that it
-            # vanished - keep treating it as blocked.
+            # The sensor reports 255 both for "nothing in range" and for an
+            # object closer than its minimum range. If the last reading was
+            # already close, treat a jump to 255 as still blocked, not open.
             if value >= SENSOR_NO_ECHO_RAW and self.history[number]:
                 previous = statistics.median(self.history[number])
-                if previous < FRONT_SLOWDOWN_CM:
+                if previous < NO_ECHO_RECOVERY_CM:
                     value = 0
             self.history[number].append(value)
         return {
@@ -223,28 +167,19 @@ class MazeSolver:
             for number, values in self.history.items()
         }
 
-    def _reset_turn_state(self):
-        self.right_open_streak = 0
-        self.front_blocked_streak = 0
-        self.reacquire_streak = 0
-        self.consecutive_dead_ends = 0
-        self.recent_right.clear()
-
     def run(self):
-        print("speed_run: maze solver running. Press Ctrl+C to stop.")
+        print("speed_run: bump-and-turn maze solver running. Ctrl+C to stop.")
         started_at = time.monotonic()
 
-        while not self.robot.shutdown_now and not self.give_up:
+        while not self.robot.shutdown_now:
             tick_started = time.monotonic()
             distances = self.read_distances()
             left = distances[SENSOR_LEFT]
             front = distances[SENSOR_FRONT]
             right = distances[SENSOR_RIGHT]
-            front_zone = classify_front(front)
 
             print(
-                f"left={left:5.1f}  front={front:5.1f} [{front_zone:7s}]  "
-                f"right={right:5.1f}",
+                f"left={left:5.1f}  front={front:5.1f}  right={right:5.1f}",
                 end="\r",
                 flush=True,
             )
@@ -260,121 +195,34 @@ class MazeSolver:
                 print("\n>>> Exit found - wide open on all sides. Stopping.")
                 return
 
+            if front <= FRONT_STOP_CM:
+                self.front_blocked_streak += 1
+            else:
+                self.front_blocked_streak = 0
+
+            if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
+                self.front_blocked_streak = 0
+                self.consecutive_blocked += 1
+                if self.consecutive_blocked > MAX_CONSECUTIVE_STUCK:
+                    self.stop()
+                    print(f"\n>>> Stopping: stuck after {MAX_CONSECUTIVE_STUCK} "
+                          "bounces with no progress.")
+                    return
+                print(f"\n>>> BOUNCE front ({self.consecutive_blocked}/"
+                      f"{MAX_CONSECUTIVE_STUCK}) left={left:.0f} right={right:.0f}")
+                self.bounce_off_front()
+                continue
+
             if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
                 close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
                 side = "LEFT" if close_sensor == SENSOR_LEFT else "RIGHT"
-                print(f"\n>>> AVOID {side} at left={left:.0f} right={right:.0f}")
-                self.avoid_side_wall(close_sensor)
-                self.right_open_streak = 0
+                print(f"\n>>> BOUNCE {side} at left={left:.0f} right={right:.0f}")
+                self.bounce_off_side(close_sensor)
                 self.front_blocked_streak = 0
                 continue
 
-            if right <= RIGHT_REACQUIRE_CM:
-                self.has_ever_found_wall = True
-
-            right_jumped = (
-                self.has_ever_found_wall
-                and len(self.recent_right) == self.recent_right.maxlen
-                and right - min(self.recent_right) >= RIGHT_JUMP_CM
-            )
-            self.recent_right.append(right)
-
-            right_open_now = self.has_ever_found_wall and (
-                right >= RIGHT_OPEN_CM or right_jumped
-            )
-            front_blocked_now = front_zone == "BLOCKED"
-
-            self.right_open_streak = (
-                self.right_open_streak + 1 if right_open_now else 0
-            )
-            self.front_blocked_streak = (
-                self.front_blocked_streak + 1 if front_blocked_now else 0
-            )
-
-            if self.right_open_streak >= RIGHT_OPEN_CONFIRM_SAMPLES:
-                print(f"\n>>> TURN RIGHT (junction) left={left:.0f} "
-                      f"front={front:.0f} right={right:.0f}")
-                self._reset_turn_state()
-                self.turn_right()
-                self.wall_acquired = False
-                continue
-
-            if self.front_blocked_streak >= FRONT_BLOCK_CONFIRM_SAMPLES:
-                if right_open_now:
-                    # Front usually confirms first purely because it needs
-                    # fewer samples - trust a strong right-open reading
-                    # immediately once we're at a real decision point,
-                    # rather than waiting out its own full streak.
-                    print(f"\n>>> TURN RIGHT (junction, front closing) "
-                          f"left={left:.0f} front={front:.0f} right={right:.0f}")
-                    self._reset_turn_state()
-                    self.turn_right()
-                    self.wall_acquired = False
-                    continue
-                self.consecutive_dead_ends += 1
-                if self.consecutive_dead_ends > MAX_CONSECUTIVE_DEAD_ENDS:
-                    self.stop()
-                    self.give_up = True
-                    print(f"\n>>> Stopping: {MAX_CONSECUTIVE_DEAD_ENDS} dead "
-                          "ends in a row with no progress.")
-                    continue
-                print(f"\n>>> TURN LEFT (dead end "
-                      f"{self.consecutive_dead_ends}/{MAX_CONSECUTIVE_DEAD_ENDS}) "
-                      f"left={left:.0f} front={front:.0f} right={right:.0f}")
-                self.right_open_streak = 0
-                self.front_blocked_streak = 0
-                self.turn_left()
-                continue
-
-            if not self.wall_acquired:
-                if right <= RIGHT_REACQUIRE_CM:
-                    self.reacquire_streak += 1
-                else:
-                    self.reacquire_streak = 0
-                if self.reacquire_streak >= REACQUIRE_CONFIRM_SAMPLES:
-                    print(f"\n<<< wall reacquired at right={right:.0f}")
-                    self.wall_acquired = True
-                    self.reacquire_streak = 0
-                    self.recent_right.clear()
-
-            self.consecutive_dead_ends = 0
-
-            if front_zone == "CLEAR":
-                forward_speed = CRUISE_SPEED
-            elif front_zone == "SLOW":
-                scale = (front - FRONT_STOP_CM) / (FRONT_SLOWDOWN_CM - FRONT_STOP_CM)
-                scale = max(0.0, min(1.0, scale))
-                forward_speed = MIN_FORWARD_SPEED + (
-                    CRUISE_SPEED - MIN_FORWARD_SPEED
-                ) * scale
-            else:  # BLOCKED but not yet confirmed - crawl, don't stop
-                forward_speed = MIN_FORWARD_SPEED
-
-            if left >= LEFT_SENSE_CM:
-                left_contribution = 0.0
-            else:
-                _, left_contribution = band_contribution(
-                    left, LEFT_NEAR_CM, LEFT_FAR_CM, sign=-1
-                )
-
-            if self.wall_acquired:
-                _, right_contribution = band_contribution(
-                    right, RIGHT_NEAR_CM, RIGHT_FAR_CM, sign=1
-                )
-            elif right < RIGHT_NEAR_CM:
-                # Not tracking yet, but close enough to need a push away
-                # regardless - see SIDE_STOP_CM in the module docstring.
-                _, right_contribution = band_contribution(
-                    right, RIGHT_NEAR_CM, RIGHT_FAR_CM, sign=1
-                )
-            else:
-                right_contribution = 0.0
-
-            correction = clamp(
-                right_contribution + left_contribution,
-                -MAX_STEER_CORRECTION, MAX_STEER_CORRECTION,
-            )
-            self.send(forward_speed + correction, forward_speed - correction)
+            self.consecutive_blocked = 0
+            self.send(CRUISE_SPEED, CRUISE_SPEED)
 
             remaining = CONTROL_PERIOD - (time.monotonic() - tick_started)
             if remaining > 0:
