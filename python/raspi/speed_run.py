@@ -52,7 +52,12 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
+CRUISE_SPEED = 190      # was 150 - a bigger single jump this time, not
+                        # another +10%. TURN_SPEED/BACKUP_SPEED left alone
+                        # on purpose - that lever already backfired once
+                        # (turning faster overshot between checks); this
+                        # one only affects straight-line driving, a
+                        # different mechanism entirely.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 
