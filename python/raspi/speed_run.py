@@ -28,6 +28,10 @@
 #     like the robot spinning in place and ending up back where it started
 # Everything else is intentionally as simple as it can be - no threads,
 # no zones, no smooth speed ramp. One speed, a couple of thresholds.
+#
+# The finish jingle is a single blocking call, not a background thread:
+# it only ever runs once the robot has already stopped for good, so
+# there's no control loop left for a thread to avoid blocking.
 
 from collections import deque
 import statistics
@@ -35,6 +39,7 @@ import sys
 import time
 
 import imrt_robot_serial
+import RPi.GPIO as GPIO
 
 
 SENSOR_RIGHT = 1
@@ -77,9 +82,32 @@ START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 SENSOR_NO_ECHO_RAW = 250
 CONTROL_PERIOD = 0.06
 
+# Piezo buzzer wired straight to a Raspberry Pi GPIO pin (see
+# gpio_tune_player.py) - independent of the Arduino/motor serial link, so
+# playing a sound can never touch anything on the Arduino side.
+BUZZ_PIN = 23
+BUZZ_DUTY = 10
+BEEP_PITCH = 440  # a plain, audible "A" - not a tune, just a chirp
+# Long enough to actually hear, short enough that even if it somehow
+# overran a tick or two, it would be negligible - but it never blocks, so
+# in practice it doesn't cost the control loop any time at all.
+BEEP_SECONDS = 0.12
+# Cue the beep when this many of the 3 sensors read blocked at once - a
+# tight squeeze, not necessarily a stop-and-turn.
+BEEP_BLOCKED_SENSORS = 2
+
 
 def clamp(value, lower=-500, upper=500):
     return max(lower, min(upper, int(value)))
+
+
+def setup_buzzer(pin=BUZZ_PIN):
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(pin, GPIO.OUT)
+    pwm = GPIO.PWM(pin, 250)
+    pwm.start(0)
+    return pwm
 
 
 class MazeSolver:
@@ -91,6 +119,40 @@ class MazeSolver:
         # Consecutive bounces with no successful forward driving in
         # between - not reset until a normal driving tick happens.
         self.consecutive_blocked = 0
+        # Buzzer: set up lazily on the first beep, not here - a throwaway
+        # MazeSolver used only to send a stop command should never touch
+        # GPIO. self.beep_off_at is also the "currently beeping" flag: 0.0
+        # means idle, a future timestamp means on until then.
+        self.pwm = None
+        self.buzzer_failed = False
+        self.beep_off_at = 0.0
+
+    def beep(self):
+        # Non-blocking: turns the tone on now and returns immediately.
+        # update_beep(), called every tick from run(), turns it off again
+        # on a later tick - no sleep anywhere in this path, so it can
+        # never delay a sensor read or a motor command.
+        if self.pwm is None and not self.buzzer_failed:
+            try:
+                self.pwm = setup_buzzer()
+            except Exception as error:
+                print(f"(sound unavailable: {error})")
+                self.buzzer_failed = True
+        if self.pwm is None:
+            return
+        self.pwm.ChangeDutyCycle(BUZZ_DUTY)
+        self.pwm.ChangeFrequency(BEEP_PITCH)
+        self.beep_off_at = time.monotonic() + BEEP_SECONDS
+
+    def update_beep(self):
+        if self.beep_off_at and time.monotonic() >= self.beep_off_at:
+            self.pwm.ChangeDutyCycle(0)
+            self.beep_off_at = 0.0
+
+    def close_buzzer(self):
+        if self.pwm is not None:
+            self.pwm.stop()
+            GPIO.cleanup()
 
     def send(self, left, right):
         self.robot.send_command(
@@ -184,6 +246,15 @@ class MazeSolver:
                 flush=True,
             )
 
+            self.update_beep()  # non-blocking - see beep()/update_beep()
+            blocked_sensors = sum((
+                front <= FRONT_STOP_CM,
+                left <= SIDE_STOP_CM,
+                right <= SIDE_STOP_CM,
+            ))
+            if blocked_sensors >= BEEP_BLOCKED_SENSORS and not self.beep_off_at:
+                self.beep()
+
             if min(left, front, right) >= EXIT_OPEN_CM:
                 self.exit_open_count += 1
             else:
@@ -232,15 +303,22 @@ class MazeSolver:
 def main():
     port = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
     robot = imrt_robot_serial.IMRTRobotSerial()
+    solver = None
 
     try:
         robot.connect(port)
         robot.run()
-        MazeSolver(robot).run()
+        solver = MazeSolver(robot)
+        solver.run()
     except Exception as error:
         print(f"\nRobot program stopped because of an error: {error}")
         raise
     finally:
+        if solver is not None:
+            try:
+                solver.close_buzzer()
+            except Exception:
+                pass
         if hasattr(robot, "serial_port_"):
             try:
                 MazeSolver(robot).stop()
