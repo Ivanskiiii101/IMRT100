@@ -52,12 +52,16 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 210      # 190 was the last speed confirmed good on its
-                        # own; 230 kept U-turning even with bigger
-                        # stopping margins, so this splits the difference.
-                        # CONTROL_PERIOD and the STOP_CM margins below have
-                        # each been retuned again since for other reasons -
-                        # see their own comments for current values.
+CRUISE_SPEED = 210      # was 230, dialed back down - 190 was the last
+                        # confirmed-good speed, 230 kept U-turning even
+                        # with the bigger stopping margins below, so
+                        # 210 splits the difference to narrow down where
+                        # the actual working ceiling is. CONTROL_PERIOD
+                        # and the STOP_CM margins are left at their 230
+                        # values on purpose - loosening them back up for
+                        # a lower speed would only remove margin for no
+                        # benefit; leaving them gives this test more
+                        # safety buffer than 210 strictly needs, not less.
 # Raised from 140. Every turn commands both wheels in opposite directions
 # at this speed (one forward, one backward) - if one motor doesn't have
 # enough command strength to actually overcome friction in reverse at a
@@ -103,12 +107,7 @@ STUCK_THRESHOLD = 2          # with no forward progress in between
 MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 
 SIDE_AVOID_BACKUP_SECONDS = 0.10
-# This turn is fixed-duration, not condition-checked like the front turn -
-# so when TURN_SPEED went 140->170 to fix the dead-zone issue, this
-# started sweeping a proportionally bigger angle in the same time without
-# anyone noticing. Scaled back down to hold the actual angle turned
-# roughly constant: 0.15*140/170=0.124, rounded to 0.12.
-SIDE_AVOID_TURN_SECONDS = 0.12
+SIDE_AVOID_TURN_SECONDS = 0.15
 
 # Checked more often, not faster: raising TURN_SPEED instead of tightening
 # this was tried and made things worse - the robot swept a bigger angle
@@ -134,8 +133,8 @@ CONTROL_PERIOD = 0.03
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
 AUDIO_FILE = Path(__file__).with_name("meow-meow-meow-tiktok.mp3")
-# Keep this above FRONT_STOP_CM - otherwise the robot bounces away before
-# ever getting close enough to reach this, and the sound never plays.
+# Raised from 40 to stay outside the new FRONT_STOP_CM=50 - otherwise the
+# robot bounces away before ever getting close enough to reach this.
 SOUND_TRIGGER_CM = 60  # play once when front gets this close
 
 
