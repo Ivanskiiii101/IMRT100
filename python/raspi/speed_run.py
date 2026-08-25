@@ -52,9 +52,16 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
-TURN_SPEED = 140
-BACKUP_SPEED = 120
+CRUISE_SPEED = 150      # only affects straight-line driving - see below
+# Every bounce (stop, back up, pivot) runs entirely at these two speeds,
+# never CRUISE_SPEED - a front bounce costs roughly 1.5s of dead time at
+# the old values (140/120), almost all of it in the pivot. Raising these
+# shortens every bounce directly, without touching the confirm-sample
+# debounce that actually keeps turns from mis-firing - that logic counts
+# ticks, not time, so it's unaffected by how fast each tick's pivot is.
+TURN_SPEED = 150         # now matches CRUISE_SPEED - already proven safe
+                          # at this speed for straight-line driving
+BACKUP_SPEED = 130       # kept a bit more conservative - reversing blind
 
 FRONT_STOP_CM = 35
 # A bit more clearance than a dead-ahead stop needs: with no slowdown
