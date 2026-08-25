@@ -61,11 +61,17 @@ CRUISE_SPEED = 230      # was 190 - CONTROL_PERIOD below is tightened
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 
-FRONT_STOP_CM = 35
-# A bit more clearance than a dead-ahead stop needs: with no slowdown
-# ramp, there's nothing nudging the robot away from a side wall early -
-# this is the only side defence there is.
-SIDE_STOP_CM = 12
+# Raised from 35 - CRUISE_SPEED has grown from 150 to 230 (1.5x) since
+# this was set, and this is physical stopping distance, not reaction
+# time: even with zero-latency reaction, a faster-moving robot needs more
+# real distance to actually halt once the motors cut. Tightening
+# CONTROL_PERIOD (reaction time) already got applied twice for the
+# CRUISE_SPEED increases and stopped helping - the U-turn at 230 kept
+# happening with the exact same reaction-distance ratio that worked fine
+# at 190, which is what points at momentum/braking distance instead.
+FRONT_STOP_CM = 50
+# Raised to match, same reasoning as FRONT_STOP_CM above.
+SIDE_STOP_CM = 16
 NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
@@ -103,7 +109,9 @@ CONTROL_PERIOD = 0.03
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
 AUDIO_FILE = Path(__file__).with_name("meow-meow-meow-tiktok.mp3")
-SOUND_TRIGGER_CM = 40  # play once when front gets this close
+# Raised from 40 to stay outside the new FRONT_STOP_CM=50 - otherwise the
+# robot bounces away before ever getting close enough to reach this.
+SOUND_TRIGGER_CM = 60  # play once when front gets this close
 
 
 def clamp(value, lower=-500, upper=500):
