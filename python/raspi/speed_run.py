@@ -107,7 +107,15 @@ STUCK_THRESHOLD = 2          # with no forward progress in between
 MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 
 SIDE_AVOID_BACKUP_SECONDS = 0.10
-SIDE_AVOID_TURN_SECONDS = 0.15
+# This turn is fixed-duration, not condition-checked like the front turn -
+# so when TURN_SPEED went 140->170 (to fix the wheel dead-zone issue),
+# this started sweeping a proportionally bigger angle in the same time
+# without anyone noticing, which is what was causing the repeated
+# left/right bounce-ping-pong down a tight corridor: an over-rotating
+# nudge away from one wall swings far enough to trigger the other side
+# immediately. Scaled back down to hold the actual angle turned roughly
+# constant: 0.15*140/170=0.124, rounded to 0.12.
+SIDE_AVOID_TURN_SECONDS = 0.12
 
 # Checked more often, not faster: raising TURN_SPEED instead of tightening
 # this was tried and made things worse - the robot swept a bigger angle
