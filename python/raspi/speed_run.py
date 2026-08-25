@@ -52,16 +52,16 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 210      # was 230, dialed back down - 190 was the last
-                        # confirmed-good speed, 230 kept U-turning even
-                        # with the bigger stopping margins below, so
-                        # 210 splits the difference to narrow down where
-                        # the actual working ceiling is. CONTROL_PERIOD
-                        # and the STOP_CM margins are left at their 230
-                        # values on purpose - loosening them back up for
-                        # a lower speed would only remove margin for no
-                        # benefit; leaving them gives this test more
-                        # safety buffer than 210 strictly needs, not less.
+CRUISE_SPEED = 200      # was 210, cut ~5% - this is a momentum/stopping-
+                        # distance fix, not a reaction-time one:
+                        # CONTROL_PERIOD is already tighter than 210
+                        # strictly needs (it was tuned for 230), so
+                        # decision latency isn't the bottleneck here.
+                        # FRONT_STOP_CM was pulled down to 40 two changes
+                        # ago specifically to get closer before choosing a
+                        # turn direction, which trades away some stopping
+                        # margin - less speed gives that margin back
+                        # without undoing the closer look-before-turning.
 # Raised from 140. Every turn commands both wheels in opposite directions
 # at this speed (one forward, one backward) - if one motor doesn't have
 # enough command strength to actually overcome friction in reverse at a
