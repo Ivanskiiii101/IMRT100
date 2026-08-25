@@ -62,7 +62,18 @@ CRUISE_SPEED = 210      # was 230, dialed back down - 190 was the last
                         # a lower speed would only remove margin for no
                         # benefit; leaving them gives this test more
                         # safety buffer than 210 strictly needs, not less.
-TURN_SPEED = 140
+# Raised from 140. Every turn commands both wheels in opposite directions
+# at this speed (one forward, one backward) - if one motor doesn't have
+# enough command strength to actually overcome friction in reverse at a
+# given magnitude, the robot arcs around the stuck wheel instead of
+# pivoting on the spot, which throws off rotate_until_clear() (it assumes
+# an in-place pivot when deciding how long "clear" should take). Raising
+# this pushes both motors further past that point. A jump to 150 was
+# tried once before and made things worse, but that was diagnosed as
+# overshoot from TURN_STEP_SECONDS still being 0.05 at the time - that's
+# since been tightened to 0.04, so this is a genuinely different test,
+# not a repeat of the same failed change.
+TURN_SPEED = 170
 BACKUP_SPEED = 120
 
 # Raised from 35 - CRUISE_SPEED has grown from 150 to 230 (1.5x) since
