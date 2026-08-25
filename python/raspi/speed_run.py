@@ -85,12 +85,20 @@ BACKUP_SPEED = 120
 # happening with the exact same reaction-distance ratio that worked fine
 # at 190, which is what points at momentum/braking distance instead.
 FRONT_STOP_CM = 50
-# Raised to match, same reasoning as FRONT_STOP_CM above.
-SIDE_STOP_CM = 16
+# Back down from 16 to 12: that was sized for CRUISE_SPEED=230, which got
+# dialed back to 210, so it was more cautious than the current speed
+# needs - and, separately, it had no debounce at all (unlike front, which
+# needs 2 confirmed ticks), so a single close reading while squeezing
+# through an ordinary narrow stretch triggered a full stop-and-nudge on
+# its own. Both together meant a merely-tight-but-passable corridor could
+# derail otherwise fine forward progress even with the front wide open -
+# SIDE_BLOCK_CONFIRM_SAMPLES below fixes the debounce half of that.
+SIDE_STOP_CM = 12
 NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
 FRONT_CLEAR_CONFIRM_SAMPLES = 3  # symmetric with the above - see docstring
+SIDE_BLOCK_CONFIRM_SAMPLES = 2   # same idea, applied to the side check
 
 BACKUP_SECONDS = 0.2
 STUCK_BACKUP_SECONDS = 0.6   # a bigger backup once bouncing repeatedly
@@ -150,6 +158,7 @@ class MazeSolver:
         self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
         self.front_blocked_streak = 0
+        self.side_blocked_streak = 0
         # Consecutive bounces with no successful forward driving in
         # between - not reset until a normal driving tick happens.
         self.consecutive_blocked = 0
@@ -284,9 +293,16 @@ class MazeSolver:
                 print(f"\n>>> BOUNCE front ({self.consecutive_blocked}/"
                       f"{MAX_CONSECUTIVE_STUCK}) left={left:.0f} right={right:.0f}")
                 self.bounce_off_front()
+                self.side_blocked_streak = 0
                 continue
 
             if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
+                self.side_blocked_streak += 1
+            else:
+                self.side_blocked_streak = 0
+
+            if self.side_blocked_streak >= SIDE_BLOCK_CONFIRM_SAMPLES:
+                self.side_blocked_streak = 0
                 close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
                 side = "LEFT" if close_sensor == SENSOR_LEFT else "RIGHT"
                 print(f"\n>>> BOUNCE {side} at left={left:.0f} right={right:.0f}")
