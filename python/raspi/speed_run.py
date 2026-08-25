@@ -124,7 +124,14 @@ SIDE_AVOID_TURN_SECONDS = 0.12
 # CONTROL_PERIOD below - the sample *counts* in FRONT_BLOCK_CONFIRM_SAMPLES
 # etc are untouched, so the noise-rejection they give is unchanged; the
 # same number of confirm ticks just takes less real time to resolve.
-TURN_STEP_SECONDS = 0.04
+#
+# This was 0.04, paired with TURN_SPEED=140. TURN_SPEED was later raised
+# to 170 for an unrelated reason (the wheel dead-zone fix) and this never
+# got re-paired - so the exact overshoot mechanism this was originally
+# written to prevent came back, and looked like a U-turn again. Rescaled
+# to hold the same angle-per-check ratio: 0.04*140/170=0.033, rounded
+# down to 0.03.
+TURN_STEP_SECONDS = 0.03
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
 EXIT_OPEN_CM = 180
