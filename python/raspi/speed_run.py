@@ -94,7 +94,14 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-CONTROL_PERIOD = 0.05
+# Tightened to match the CRUISE_SPEED bump above: 150*0.05=7.5
+# (speed*period); holding that product roughly constant at
+# CRUISE_SPEED=190 gives 7.5/190=0.0395, rounded down (tighter, not
+# looser) to 0.04 - the robot covers about the same distance during the
+# FRONT_BLOCK_CONFIRM_SAMPLES confirm window as it did at 150, instead of
+# ~27% more. This was missed when CRUISE_SPEED was raised - same mistake
+# as an unchecked FORWARD_SPEED bump would be in maze.py.
+CONTROL_PERIOD = 0.04
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
