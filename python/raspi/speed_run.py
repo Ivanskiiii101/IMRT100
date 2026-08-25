@@ -52,12 +52,16 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 230      # was 190 - CONTROL_PERIOD below is tightened
-                        # alongside it this time, unlike the jump to 190,
-                        # which is what caused the loop/U-turn last round.
-                        # TURN_SPEED/BACKUP_SPEED still left alone - that
-                        # lever backfired once already and only affects
-                        # turning, a different mechanism from cruise speed.
+CRUISE_SPEED = 210      # was 230, dialed back down - 190 was the last
+                        # confirmed-good speed, 230 kept U-turning even
+                        # with the bigger stopping margins below, so
+                        # 210 splits the difference to narrow down where
+                        # the actual working ceiling is. CONTROL_PERIOD
+                        # and the STOP_CM margins are left at their 230
+                        # values on purpose - loosening them back up for
+                        # a lower speed would only remove margin for no
+                        # benefit; leaving them gives this test more
+                        # safety buffer than 210 strictly needs, not less.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 
