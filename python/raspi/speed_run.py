@@ -74,7 +74,14 @@ MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 SIDE_AVOID_BACKUP_SECONDS = 0.10
 SIDE_AVOID_TURN_SECONDS = 0.15
 
-TURN_STEP_SECONDS = 0.05
+# Checked more often, not faster: raising TURN_SPEED instead of tightening
+# this was tried and made things worse - the robot swept a bigger angle
+# between checks and overshot past "just clear" into the next thing, which
+# then needed extra bounce cycles to recover from. Same idea for
+# CONTROL_PERIOD below - the sample *counts* in FRONT_BLOCK_CONFIRM_SAMPLES
+# etc are untouched, so the noise-rejection they give is unchanged; the
+# same number of confirm ticks just takes less real time to resolve.
+TURN_STEP_SECONDS = 0.04
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
 EXIT_OPEN_CM = 180
@@ -82,7 +89,7 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-CONTROL_PERIOD = 0.06
+CONTROL_PERIOD = 0.05
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
