@@ -52,12 +52,12 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 190      # was 150 - a bigger single jump this time, not
-                        # another +10%. TURN_SPEED/BACKUP_SPEED left alone
-                        # on purpose - that lever already backfired once
-                        # (turning faster overshot between checks); this
-                        # one only affects straight-line driving, a
-                        # different mechanism entirely.
+CRUISE_SPEED = 230      # was 190 - CONTROL_PERIOD below is tightened
+                        # alongside it this time, unlike the jump to 190,
+                        # which is what caused the loop/U-turn last round.
+                        # TURN_SPEED/BACKUP_SPEED still left alone - that
+                        # lever backfired once already and only affects
+                        # turning, a different mechanism from cruise speed.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 
@@ -94,14 +94,11 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-# Tightened to match the CRUISE_SPEED bump above: 150*0.05=7.5
-# (speed*period); holding that product roughly constant at
-# CRUISE_SPEED=190 gives 7.5/190=0.0395, rounded down (tighter, not
-# looser) to 0.04 - the robot covers about the same distance during the
-# FRONT_BLOCK_CONFIRM_SAMPLES confirm window as it did at 150, instead of
-# ~27% more. This was missed when CRUISE_SPEED was raised - same mistake
-# as an unchecked FORWARD_SPEED bump would be in maze.py.
-CONTROL_PERIOD = 0.04
+# Tightened again alongside CRUISE_SPEED, same approach that fixed the
+# loop/U-turn last round: 190*0.04=7.6 (speed*period); holding that
+# constant at CRUISE_SPEED=230 gives 7.6/230=0.033, rounded down to 0.03 -
+# same distance covered during the confirm window as at 190, not more.
+CONTROL_PERIOD = 0.03
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
