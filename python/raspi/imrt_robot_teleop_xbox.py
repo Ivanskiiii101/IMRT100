@@ -9,6 +9,11 @@ def main():
     vx_gain = 2
     wz_gain = 4
 
+    # Exponential smoothing factor for the drive commands (0-1). Lower values
+    # give a smoother/slower response to stick movement, higher values are
+    # snappier but more prone to jerks from noise or a shaky hand.
+    smoothing_alpha = 0.3
+
     controller = imrt_xbox.IMRTxbox()
 
     # Create motor serial object
@@ -27,6 +32,9 @@ def main():
     motor_serial.run()
 
 
+    vx_smoothed = 0.0
+    wz_smoothed = 0.0
+
     try:
         while not motor_serial.shutdown_now:
             but_a = controller.get_a()
@@ -40,8 +48,15 @@ def main():
             ax_ry = controller.get_right_y()
 
             # use pos.x, pos.y and pos.distance to determin vx and wz
-            vx = vx_gain * ax_ly#* (-1,1)[bd.position.y > 0]
-            wz = -wz_gain * ax_rx #* (1,-1)[bd.position.y > 0]
+            vx_target = vx_gain * ax_ly#* (-1,1)[bd.position.y > 0]
+            wz_target = -wz_gain * ax_rx #* (1,-1)[bd.position.y > 0]
+
+            # Smooth the commanded velocities so a noisy/jerky stick doesn't
+            # translate into a sudden jolt in the motor commands.
+            vx_smoothed += smoothing_alpha * (vx_target - vx_smoothed)
+            wz_smoothed += smoothing_alpha * (wz_target - wz_smoothed)
+            vx = vx_smoothed
+            wz = wz_smoothed
             print(vx, wz)
 
             # calculate motor commands

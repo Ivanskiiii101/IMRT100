@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import math
 import struct
 import threading
 import time
@@ -76,6 +77,13 @@ class IMRTxbox:
                         but_value /= 32767.
                         if abs(but_value) < deadzone:
                             but_value = 0.
+                        else:
+                            # Rescale so output ramps smoothly from 0 right past
+                            # the deadzone edge, instead of jumping straight to
+                            # `deadzone` the instant the stick clears it.
+                            but_value = math.copysign(
+                                (abs(but_value) - deadzone) / (1. - deadzone),
+                                but_value)
                         self._mutex.acquire()
                         self._axes[but_num] = but_value 
                         self._mutex.release()
