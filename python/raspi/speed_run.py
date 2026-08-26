@@ -58,15 +58,20 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 165      # was 150, +10% - CONTROL_PERIOD below is
+CRUISE_SPEED = 173      # was 165, +5% - CONTROL_PERIOD below is
                         # tightened to match, same approach used
                         # throughout this file's tuning history.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 # The inner wheel's speed during the side-nudge - well below CRUISE_SPEED
 # so the heading change is sharp enough to matter in a short burst, but
-# still a real forward speed, never a stop or a reverse.
-SIDE_ADJUST_SPEED = 70
+# still a real forward speed, never a stop or a reverse. What actually
+# matters for the nudge's turn rate is the *gap* to CRUISE_SPEED, not
+# this value on its own - was 70 (a gap of 95 at the old CRUISE_SPEED=
+# 165). Raised to hold that same gap at the new CRUISE_SPEED=173
+# (173-95=78), so the ~5 degree calibration on SIDE_NUDGE_SECONDS still
+# holds instead of quietly turning a bit sharper.
+SIDE_ADJUST_SPEED = 78
 # How long the nudge lasts - both wheels stay forward (unlike a pivot,
 # where one reverses), so this needs to be long enough for the speed gap
 # to actually turn the heading a meaningful amount, roughly ~5 degrees.
@@ -108,6 +113,16 @@ MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 DIRECTION_SETTLE_READS = 3
 DIRECTION_SETTLE_SECONDS = 0.05
 
+# If a bounce fires again within this long of the last turn, treat it as
+# still resolving the same junction (e.g. drove into a dead end, hit its
+# far wall, and is now backing out) and go the opposite way from last
+# time, instead of re-deriving the same answer from readings that
+# haven't meaningfully changed. Long enough to comfortably cover driving
+# into a shallow dead-end pocket and bouncing back off its far wall;
+# short enough that hitting an unrelated wall much later in a genuinely
+# different part of the maze still gets a fresh decision.
+RECENT_TURN_SECONDS = 3.0
+
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
@@ -116,11 +131,11 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-# Tightened alongside CRUISE_SPEED: 150*0.06=9 (speed*period); holding
-# that constant at CRUISE_SPEED=165 gives 9/165=0.0545, rounded down to
-# 0.05 - same distance covered during the confirm window as before, not
-# more.
-CONTROL_PERIOD = 0.05
+# Tightened alongside CRUISE_SPEED again: 165*0.05=8.25 (speed*period);
+# holding that constant at CRUISE_SPEED=173 gives 8.25/173=0.0477,
+# rounded down to 0.047 - same distance covered during the confirm
+# window as before, not more.
+CONTROL_PERIOD = 0.047
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
@@ -150,15 +165,19 @@ class MazeSolver:
         self.exit_open_count = 0
         self.front_blocked_streak = 0
         # Consecutive bounces with no successful forward driving in
-        # between - not reset until a normal driving tick happens.
+        # between - not reset until a normal driving tick happens. Still
+        # used for the backup-further/give-up escalation - see
+        # STUCK_THRESHOLD/MAX_CONSECUTIVE_STUCK.
         self.consecutive_blocked = 0
-        # Which way the most recent turn went (True=right, False=left) -
-        # see bounce_off_front(). Only meaningful together with
-        # consecutive_blocked; stale values from an earlier, unrelated
-        # part of the maze are never consulted, since by the time this
-        # matters again consecutive_blocked has always gone back through
-        # a fresh 0 first.
+        # Which way the most recent turn went (True=right, False=left),
+        # and when - see bounce_off_front(). Deliberately time-based, not
+        # tied to consecutive_blocked: driving even briefly into a dead
+        # end before hitting its far wall counts as "forward progress"
+        # and resets consecutive_blocked to 0, so a zero-progress-only
+        # check never catches "I just tried this branch and it was a dead
+        # end" - only "I'm stuck in literally the same spot."
         self.last_turn_was_right = None
+        self.last_turn_at = None
         # True while front is still inside SOUND_TRIGGER_CM, so the sound
         # fires once on the approach, not once per tick for as long as
         # it's close - reset the moment front is clear again.
@@ -202,12 +221,18 @@ class MazeSolver:
         self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
         self.stop()  # timed_drive() doesn't stop on its own when it ends
 
-        if self.consecutive_blocked >= 2 and self.last_turn_was_right is not None:
-            # Already turned once very recently and we're right back here
-            # with no forward progress in between - re-comparing left/right
-            # tends to land on the same answer, since the readings haven't
-            # meaningfully changed. Go the other way instead of asking the
-            # same question that just gave a bad answer.
+        recently_turned = (
+            self.last_turn_was_right is not None
+            and self.last_turn_at is not None
+            and time.monotonic() - self.last_turn_at < RECENT_TURN_SECONDS
+        )
+        if recently_turned:
+            # Turned this recently, and we're already bouncing again -
+            # very likely still resolving the same junction (backed into
+            # a dead end and out again, or stuck in place). Re-comparing
+            # left/right tends to land on the same answer, since the
+            # readings haven't meaningfully changed either way. Go the
+            # other way instead of asking the same question again.
             turn_right = not self.last_turn_was_right
         else:
             for _ in range(DIRECTION_SETTLE_READS):
@@ -218,6 +243,7 @@ class MazeSolver:
             turn_right = right >= left
 
         self.last_turn_was_right = turn_right
+        self.last_turn_at = time.monotonic()
         if turn_right:
             self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
         else:
