@@ -12,7 +12,7 @@ ROBOT_WIDTH = 0.40 # m
 MOTOR_CMD_LIMIT = 500
 
 def main():
-    wz_gain = 4
+    wz_gain = 6
 
     loop_period = 0.1 # s, matches the time.sleep() at the end of the loop
 
@@ -26,7 +26,7 @@ def main():
     # Exponential smoothing factor for the steering command (0-1). Lower
     # values give a smoother/slower turn response, higher values are
     # snappier but more prone to jerks from noise or a shaky hand.
-    smoothing_alpha = 0.3
+    smoothing_alpha = 0.6
 
     controller = imrt_xbox.IMRTxbox()
 
