@@ -145,6 +145,13 @@ class MazeSolver:
         # Consecutive bounces with no successful forward driving in
         # between - not reset until a normal driving tick happens.
         self.consecutive_blocked = 0
+        # Which way the most recent turn went (True=right, False=left) -
+        # see bounce_off_front(). Only meaningful together with
+        # consecutive_blocked; stale values from an earlier, unrelated
+        # part of the maze are never consulted, since by the time this
+        # matters again consecutive_blocked has always gone back through
+        # a fresh 0 first.
+        self.last_turn_was_right = None
         # True while front is still inside SOUND_TRIGGER_CM, so the sound
         # fires once on the approach, not once per tick for as long as
         # it's close - reset the moment front is clear again.
@@ -188,12 +195,23 @@ class MazeSolver:
         self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
         self.stop()  # timed_drive() doesn't stop on its own when it ends
 
-        for _ in range(DIRECTION_SETTLE_READS):
-            distances = self.read_distances()
-            time.sleep(DIRECTION_SETTLE_SECONDS)
-        left = distances[SENSOR_LEFT]
-        right = distances[SENSOR_RIGHT]
-        if right >= left:
+        if self.consecutive_blocked >= 2 and self.last_turn_was_right is not None:
+            # Already turned once very recently and we're right back here
+            # with no forward progress in between - re-comparing left/right
+            # tends to land on the same answer, since the readings haven't
+            # meaningfully changed. Go the other way instead of asking the
+            # same question that just gave a bad answer.
+            turn_right = not self.last_turn_was_right
+        else:
+            for _ in range(DIRECTION_SETTLE_READS):
+                distances = self.read_distances()
+                time.sleep(DIRECTION_SETTLE_SECONDS)
+            left = distances[SENSOR_LEFT]
+            right = distances[SENSOR_RIGHT]
+            turn_right = right >= left
+
+        self.last_turn_was_right = turn_right
+        if turn_right:
             self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
         else:
             self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
