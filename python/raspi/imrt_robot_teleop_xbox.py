@@ -1,16 +1,24 @@
 import imrt_robot_serial
 import imrt_xbox
+import math
 import time
 
 
 ROBOT_WIDTH = 0.40 # m
 
 def main():
-    vx_gain = 2
     wz_gain = 4
 
-    # Exponential smoothing factor for the drive commands (0-1). Lower values
-    # give a smoother/slower response to stick movement, higher values are
+    loop_period = 0.1 # s, matches the time.sleep() at the end of the loop
+
+    # Throttle/brake (RT/LT) tuning.
+    max_speed = 2.0      # m/s, top forward/reverse speed
+    accel_rate = 2.0     # m/s^2 at full RT
+    decel_rate = 4.0     # m/s^2 at full LT (brakes harder than the accel ramps)
+    idle_decay_rate = 0.5 # m/s^2 passive coast-down when neither trigger is pressed
+
+    # Exponential smoothing factor for the steering command (0-1). Lower
+    # values give a smoother/slower turn response, higher values are
     # snappier but more prone to jerks from noise or a shaky hand.
     smoothing_alpha = 0.3
 
@@ -32,7 +40,7 @@ def main():
     motor_serial.run()
 
 
-    vx_smoothed = 0.0
+    speed = 0.0 # m/s, persistent throttle/brake state driven by RT/LT
     wz_smoothed = 0.0
 
     try:
@@ -44,18 +52,28 @@ def main():
 
             ax_lx = controller.get_left_x()
             ax_ly = controller.get_left_y()
-            ax_rx = controller.get_right_x()
-            ax_ry = controller.get_right_y()
 
-            # use pos.x, pos.y and pos.distance to determin vx and wz
-            vx_target = vx_gain * ax_ly#* (-1,1)[bd.position.y > 0]
-            wz_target = -wz_gain * ax_rx #* (1,-1)[bd.position.y > 0]
+            accel_in = controller.get_right_trigger() # 0.0-1.0
+            decel_in = controller.get_left_trigger()   # 0.0-1.0
 
-            # Smooth the commanded velocities so a noisy/jerky stick doesn't
+            # RT ramps speed up, LT ramps it down (and past zero into
+            # reverse if held). With neither pressed, speed coasts back
+            # toward zero so the robot doesn't run away unattended.
+            speed += accel_rate * accel_in * loop_period
+            speed -= decel_rate * decel_in * loop_period
+            if accel_in < 0.05 and decel_in < 0.05:
+                decay = min(abs(speed), idle_decay_rate * loop_period)
+                speed -= math.copysign(decay, speed)
+            speed = max(-max_speed, min(max_speed, speed))
+
+            # Left stick steers: how far left/right it's pushed sets the turn rate.
+            wz_target = -wz_gain * ax_lx
+
+            # Smooth the steering command so a noisy/jerky stick doesn't
             # translate into a sudden jolt in the motor commands.
-            vx_smoothed += smoothing_alpha * (vx_target - vx_smoothed)
             wz_smoothed += smoothing_alpha * (wz_target - wz_smoothed)
-            vx = vx_smoothed
+
+            vx = speed
             wz = wz_smoothed
             print(vx, wz)
 
@@ -69,9 +87,9 @@ def main():
             motor_serial.send_command(int(v1), int(v2))
 
 
-            #print("a: {}, b: {}, x: {}, y: {}, lx: {:+.2f}, ly: {:+.2f}, rx: {:+.2f}, ry: {:+.2f}".format(but_a, but_b, but_x, but_y, ax_lx, ax_ly, ax_rx, ax_ry), end='\r')
+            #print("a: {}, b: {}, x: {}, y: {}, lx: {:+.2f}, ly: {:+.2f}, accel: {:.2f}, decel: {:.2f}".format(but_a, but_b, but_x, but_y, ax_lx, ax_ly, accel_in, decel_in), end='\r')
 
-            time.sleep(0.1)
+            time.sleep(loop_period)
 
 
     finally:

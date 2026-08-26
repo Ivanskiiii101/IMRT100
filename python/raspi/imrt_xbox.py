@@ -131,7 +131,8 @@ class IMRTxbox:
         self._mutex.acquire()
         value = self._axes[self._axes_idx["LT"]]
         self._mutex.release()
-        return value
+        # Triggers report -1.0 at rest and +1.0 fully pressed; remap to 0.0-1.0.
+        return max(0.0, min(1.0, (value + 1.0) / 2.0))
 
     def get_right_x(self):
         self._mutex.acquire()
@@ -149,7 +150,8 @@ class IMRTxbox:
         self._mutex.acquire()
         value = self._axes[self._axes_idx["RT"]]
         self._mutex.release()
-        return value
+        # Triggers report -1.0 at rest and +1.0 fully pressed; remap to 0.0-1.0.
+        return max(0.0, min(1.0, (value + 1.0) / 2.0))
 
 
 
