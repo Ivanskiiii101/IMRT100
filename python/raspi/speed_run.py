@@ -52,54 +52,19 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 200      # was 210, cut ~5% - this is a momentum/stopping-
-                        # distance fix, not a reaction-time one:
-                        # CONTROL_PERIOD is already tighter than 210
-                        # strictly needs (it was tuned for 230), so
-                        # decision latency isn't the bottleneck here.
-                        # FRONT_STOP_CM was pulled down to 40 two changes
-                        # ago specifically to get closer before choosing a
-                        # turn direction, which trades away some stopping
-                        # margin - less speed gives that margin back
-                        # without undoing the closer look-before-turning.
-# Raised from 140. Every turn commands both wheels in opposite directions
-# at this speed (one forward, one backward) - if one motor doesn't have
-# enough command strength to actually overcome friction in reverse at a
-# given magnitude, the robot arcs around the stuck wheel instead of
-# pivoting on the spot, which throws off rotate_until_clear() (it assumes
-# an in-place pivot when deciding how long "clear" should take). Raising
-# this pushes both motors further past that point. A jump to 150 was
-# tried once before and made things worse, but that was diagnosed as
-# overshoot from TURN_STEP_SECONDS still being 0.05 at the time - that's
-# since been tightened to 0.04, so this is a genuinely different test,
-# not a repeat of the same failed change.
-TURN_SPEED = 170
+CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
+TURN_SPEED = 140
 BACKUP_SPEED = 120
 
-# This is also where bounce_off_front() decides which way to turn (reads
-# left/right right after triggering), so it doubles as "how close before
-# comparing sides at a junction" - too far out and a small opening hasn't
-# actually come into view yet, so the direction choice is a guess. Pulled
-# back down from 50 toward the original 35 for that reason, but not all
-# the way: 50 was sized for CRUISE_SPEED's momentum (now 210, still
-# faster than the 150 that 35 was originally set for), so this trades
-# some of that stopping margin back for a closer, more accurate look
-# before turning. Worth watching for more front contact than before.
-FRONT_STOP_CM = 40
-# Back down from 16 to 12: that was sized for CRUISE_SPEED=230, which got
-# dialed back to 210, so it was more cautious than the current speed
-# needs - and, separately, it had no debounce at all (unlike front, which
-# needs 2 confirmed ticks), so a single close reading while squeezing
-# through an ordinary narrow stretch triggered a full stop-and-nudge on
-# its own. Both together meant a merely-tight-but-passable corridor could
-# derail otherwise fine forward progress even with the front wide open -
-# SIDE_BLOCK_CONFIRM_SAMPLES below fixes the debounce half of that.
+FRONT_STOP_CM = 35
+# A bit more clearance than a dead-ahead stop needs: with no slowdown
+# ramp, there's nothing nudging the robot away from a side wall early -
+# this is the only side defence there is.
 SIDE_STOP_CM = 12
 NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
 FRONT_CLEAR_CONFIRM_SAMPLES = 3  # symmetric with the above - see docstring
-SIDE_BLOCK_CONFIRM_SAMPLES = 2   # same idea, applied to the side check
 
 BACKUP_SECONDS = 0.2
 STUCK_BACKUP_SECONDS = 0.6   # a bigger backup once bouncing repeatedly
@@ -107,31 +72,9 @@ STUCK_THRESHOLD = 2          # with no forward progress in between
 MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 
 SIDE_AVOID_BACKUP_SECONDS = 0.10
-# This turn is fixed-duration, not condition-checked like the front turn -
-# so when TURN_SPEED went 140->170 (to fix the wheel dead-zone issue),
-# this started sweeping a proportionally bigger angle in the same time
-# without anyone noticing, which is what was causing the repeated
-# left/right bounce-ping-pong down a tight corridor: an over-rotating
-# nudge away from one wall swings far enough to trigger the other side
-# immediately. Scaled back down to hold the actual angle turned roughly
-# constant: 0.15*140/170=0.124, rounded to 0.12.
-SIDE_AVOID_TURN_SECONDS = 0.12
+SIDE_AVOID_TURN_SECONDS = 0.15
 
-# Checked more often, not faster: raising TURN_SPEED instead of tightening
-# this was tried and made things worse - the robot swept a bigger angle
-# between checks and overshot past "just clear" into the next thing, which
-# then needed extra bounce cycles to recover from. Same idea for
-# CONTROL_PERIOD below - the sample *counts* in FRONT_BLOCK_CONFIRM_SAMPLES
-# etc are untouched, so the noise-rejection they give is unchanged; the
-# same number of confirm ticks just takes less real time to resolve.
-#
-# This was 0.04, paired with TURN_SPEED=140. TURN_SPEED was later raised
-# to 170 for an unrelated reason (the wheel dead-zone fix) and this never
-# got re-paired - so the exact overshoot mechanism this was originally
-# written to prevent came back, and looked like a U-turn again. Rescaled
-# to hold the same angle-per-check ratio: 0.04*140/170=0.033, rounded
-# down to 0.03.
-TURN_STEP_SECONDS = 0.03
+TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
 EXIT_OPEN_CM = 180
@@ -139,18 +82,12 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-# Tightened again alongside CRUISE_SPEED, same approach that fixed the
-# loop/U-turn last round: 190*0.04=7.6 (speed*period); holding that
-# constant at CRUISE_SPEED=230 gives 7.6/230=0.033, rounded down to 0.03 -
-# same distance covered during the confirm window as at 190, not more.
-CONTROL_PERIOD = 0.03
+CONTROL_PERIOD = 0.06
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
 AUDIO_FILE = Path(__file__).with_name("meow-meow-meow-tiktok.mp3")
-# Raised from 40 to stay outside the new FRONT_STOP_CM=50 - otherwise the
-# robot bounces away before ever getting close enough to reach this.
-SOUND_TRIGGER_CM = 60  # play once when front gets this close
+SOUND_TRIGGER_CM = 40  # play once when front gets this close
 
 
 def clamp(value, lower=-500, upper=500):
@@ -174,7 +111,6 @@ class MazeSolver:
         self.history = {number: deque(maxlen=5) for number in (1, 2, 3, 4)}
         self.exit_open_count = 0
         self.front_blocked_streak = 0
-        self.side_blocked_streak = 0
         # Consecutive bounces with no successful forward driving in
         # between - not reset until a normal driving tick happens.
         self.consecutive_blocked = 0
@@ -309,16 +245,9 @@ class MazeSolver:
                 print(f"\n>>> BOUNCE front ({self.consecutive_blocked}/"
                       f"{MAX_CONSECUTIVE_STUCK}) left={left:.0f} right={right:.0f}")
                 self.bounce_off_front()
-                self.side_blocked_streak = 0
                 continue
 
             if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
-                self.side_blocked_streak += 1
-            else:
-                self.side_blocked_streak = 0
-
-            if self.side_blocked_streak >= SIDE_BLOCK_CONFIRM_SAMPLES:
-                self.side_blocked_streak = 0
                 close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
                 side = "LEFT" if close_sensor == SENSOR_LEFT else "RIGHT"
                 print(f"\n>>> BOUNCE {side} at left={left:.0f} right={right:.0f}")
@@ -360,3 +289,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
