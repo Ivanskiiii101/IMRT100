@@ -5,12 +5,23 @@ import time
 
 ROBOT_WIDTH = 0.40 # m
 
+# Matches V_MAX in the arduino firmware (motor_serial_arduino.ino). Wheel
+# commands above this get clipped by the motor controller, so we scale them
+# down ourselves (see below) instead of letting that clipping silently eat
+# the turn differential.
+MOTOR_CMD_LIMIT = 500
+
 def main():
     wz_gain = 4
 
     loop_period = 0.1 # s, matches the time.sleep() at the end of the loop
 
-    max_speed = 3.0 # m/s, top forward/reverse speed
+    # m/s, top forward/reverse speed. 2.5 is the fastest the robot can
+    # physically go in a straight line given MOTOR_CMD_LIMIT and the 200
+    # units-per-m/s scaling below (500 / 200 = 2.5) - going higher here
+    # wouldn't do anything on a straight run, only affects how much speed
+    # gets traded away for turning at full throttle (see MOTOR_CMD_LIMIT).
+    max_speed = 2.5
 
     # Exponential smoothing factor for the steering command (0-1). Lower
     # values give a smoother/slower turn response, higher values are
@@ -67,6 +78,17 @@ def main():
             # calculate motor commands
             v1 = (vx - ROBOT_WIDTH * wz / 2) * 200
             v2 = (vx + ROBOT_WIDTH * wz / 2) * 200
+
+            # If either wheel command would exceed what the motor controller
+            # accepts, scale BOTH down together (instead of letting the
+            # firmware clip them independently) so the turn differential
+            # between the wheels is preserved and we can still turn while
+            # driving at high speed.
+            largest_cmd = max(abs(v1), abs(v2))
+            if largest_cmd > MOTOR_CMD_LIMIT:
+                scale = MOTOR_CMD_LIMIT / largest_cmd
+                v1 *= scale
+                v2 *= scale
 
 
             print ("HEI")
