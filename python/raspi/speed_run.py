@@ -212,14 +212,12 @@ class MazeSolver:
         self.stop()
 
     def bounce_off_front(self):
+        # Decide direction first, from right here at the wall - not after
+        # backing away from it. A turn is often a fairly tight corner, not
+        # a wide room, so backing up before looking can retreat the true
+        # opening out of view, leaving two similar-looking corridor walls
+        # to compare instead of the actual junction.
         self.stop()
-        backup = (
-            STUCK_BACKUP_SECONDS
-            if self.consecutive_blocked >= STUCK_THRESHOLD
-            else BACKUP_SECONDS
-        )
-        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
-        self.stop()  # timed_drive() doesn't stop on its own when it ends
 
         recently_turned = (
             self.last_turn_was_right is not None
@@ -244,6 +242,16 @@ class MazeSolver:
 
         self.last_turn_was_right = turn_right
         self.last_turn_at = time.monotonic()
+
+        # Now back up - purely for physical clearance to pivot without
+        # catching a corner, using the direction already decided above.
+        backup = (
+            STUCK_BACKUP_SECONDS
+            if self.consecutive_blocked >= STUCK_THRESHOLD
+            else BACKUP_SECONDS
+        )
+        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
+        self.stop()  # timed_drive() doesn't stop on its own when it ends
         if turn_right:
             self.rotate_until_clear(TURN_SPEED, -TURN_SPEED)
         else:
