@@ -4,12 +4,15 @@
 # front is close, then react:
 #   - front close -> stop, back up, turn toward whichever side has more
 #     room, keep driving
-#   - either side close -> keep driving, but slow the wheel on that side
-#     so the robot arcs away from it - no stop, no backing up, just a
-#     continuous lean away from whichever wall is close. This is the one
-#     piece of continuous steering in the file, and it's deliberately
-#     narrow: a single threshold and a single reduced speed, nothing
-#     proportional to *how* close, no band, no ramp.
+#   - either side close -> a short, bounded steer away from it (both
+#     wheels stay forward, one just slower for a moment - a nudge, not a
+#     pivot), then straight back to normal driving and a fresh read next
+#     tick. No stop, no backing up. This replaced an earlier version that
+#     leaned continuously for as long as the reading stayed close -
+#     that only slowed the approach rather than committing to a real
+#     heading change, which wasn't always enough to avoid contact, and
+#     could accumulate more heading drift than a robot that recovers to
+#     straight and re-reads after each small, bounded correction.
 # A junction, a dead end, and a plain wall dead ahead all just look like
 # "front is close" here, so there's no separate junction-vs-dead-end
 # decision to get wrong - one reaction covers all of them.
@@ -60,23 +63,25 @@ CRUISE_SPEED = 165      # was 150, +10% - CONTROL_PERIOD below is
                         # throughout this file's tuning history.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
-# The inner wheel's speed while leaning away from a close side - well
-# below CRUISE_SPEED so the arc is tight enough to matter, but still a
-# real forward speed, never a stop. The outer wheel stays at CRUISE_SPEED
-# the whole time - see the side-adjust block in run(). Lowered from 90 -
-# a bigger gap between the two wheels means a sharper arc away from the
-# wall, correcting faster once triggered.
+# The inner wheel's speed during the side-nudge - well below CRUISE_SPEED
+# so the heading change is sharp enough to matter in a short burst, but
+# still a real forward speed, never a stop or a reverse.
 SIDE_ADJUST_SPEED = 70
+# How long the nudge lasts - both wheels stay forward (unlike a pivot,
+# where one reverses), so this needs to be long enough for the speed gap
+# to actually turn the heading a meaningful amount, roughly ~10 degrees.
+# Not calibrated against real angle measurements yet - tune this first if
+# the nudge turns out too sharp or too shallow on the robot.
+SIDE_NUDGE_SECONDS = 0.15
 
 FRONT_STOP_CM = 35
-# Below this on either side, that side's wheel drops to SIDE_ADJUST_SPEED
-# every tick until the reading clears again - a continuous lean away from
-# the wall, not a one-off maneuver. No confirm-samples debounce here on
-# purpose: a wrong reaction is just one tick of mild correction with the
-# robot still moving forward, not a committed stop-and-turn, so a single
-# noisy reading costs nothing worth guarding against.
+# Below this on either side, that side gets one side_nudge() - a single
+# bounded correction, not a sustained lean. No confirm-samples debounce
+# here on purpose: a wrong reaction is just one short nudge with the
+# robot still moving forward the whole time, not a committed stop-and-
+# turn, so a single noisy reading costs very little.
 # Raised from 12 - CRUISE_SPEED has grown to 165 since this was set, and
-# more speed means more distance covered before the lean has time to
+# more speed means more distance covered before a correction has time to
 # create real clearance. Triggering earlier gives it more room to work
 # with before actual contact.
 SIDE_ADJUST_CM = 18
@@ -216,6 +221,16 @@ class MazeSolver:
         else:
             self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
 
+    def side_nudge(self, close_sensor):
+        # Both wheels stay forward - this is a steer, not a pivot. Fixed,
+        # short duration: after it ends, run() reads fresh distances on
+        # its very next iteration, rather than continuing to react to a
+        # reading that's now out of date.
+        if close_sensor == SENSOR_RIGHT:
+            self.timed_drive(SIDE_ADJUST_SPEED, CRUISE_SPEED, SIDE_NUDGE_SECONDS)
+        else:
+            self.timed_drive(CRUISE_SPEED, SIDE_ADJUST_SPEED, SIDE_NUDGE_SECONDS)
+
     def read_distances(self):
         raw = {
             1: self.robot.get_dist_1(),
@@ -292,15 +307,14 @@ class MazeSolver:
 
             self.consecutive_blocked = 0
 
-            # Lean away from whichever side is close, still driving
-            # forward the whole time - see SIDE_ADJUST_CM/SIDE_ADJUST_SPEED.
             if right < SIDE_ADJUST_CM:
-                left_speed, right_speed = SIDE_ADJUST_SPEED, CRUISE_SPEED
-            elif left < SIDE_ADJUST_CM:
-                left_speed, right_speed = CRUISE_SPEED, SIDE_ADJUST_SPEED
-            else:
-                left_speed, right_speed = CRUISE_SPEED, CRUISE_SPEED
-            self.send(left_speed, right_speed)
+                self.side_nudge(SENSOR_RIGHT)
+                continue
+            if left < SIDE_ADJUST_CM:
+                self.side_nudge(SENSOR_LEFT)
+                continue
+
+            self.send(CRUISE_SPEED, CRUISE_SPEED)
 
             remaining = CONTROL_PERIOD - (time.monotonic() - tick_started)
             if remaining > 0:
