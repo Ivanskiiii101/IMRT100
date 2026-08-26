@@ -116,11 +116,15 @@ DIRECTION_SETTLE_SECONDS = 0.05
 # still resolving the same junction (e.g. drove into a dead end, hit its
 # far wall, and is now backing out) and go the opposite way from last
 # time, instead of re-deriving the same answer from readings that
-# haven't meaningfully changed. Long enough to comfortably cover driving
-# into a shallow dead-end pocket and bouncing back off its far wall;
-# short enough that hitting an unrelated wall much later in a genuinely
-# different part of the maze still gets a fresh decision.
-RECENT_TURN_SECONDS = 3.0
+# haven't meaningfully changed. Raised from 3.0 - a deeper dead-end
+# pocket, or needing more than one correction bounce to get clear, can
+# take longer than that, and once it falls outside the window the next
+# bounce gets treated as a fresh decision when it isn't, with nothing
+# stopping it from choosing the same wrong way straight back into
+# already-covered ground. Still short enough that hitting an unrelated
+# wall much later, in a genuinely different part of the maze, gets a
+# fresh decision rather than an unnecessary forced flip.
+RECENT_TURN_SECONDS = 5.0
 
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
