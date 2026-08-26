@@ -1,15 +1,18 @@
 # speed_run.py - IMRT100 maze solver, robot-vacuum style.
 #
-# No wall-following, no corridor-centring, no continuous steering math -
-# just drive straight until something is close, then react:
+# No wall-following, no corridor-centring - just drive straight until the
+# front is close, then react:
 #   - front close -> stop, back up, turn toward whichever side has more
 #     room, keep driving
-#   - either side close -> stop, back up, nudge away, keep driving
+#   - either side close -> keep driving, but slow the wheel on that side
+#     so the robot arcs away from it - no stop, no backing up, just a
+#     continuous lean away from whichever wall is close. This is the one
+#     piece of continuous steering in the file, and it's deliberately
+#     narrow: a single threshold and a single reduced speed, nothing
+#     proportional to *how* close, no band, no ramp.
 # A junction, a dead end, and a plain wall dead ahead all just look like
 # "front is close" here, so there's no separate junction-vs-dead-end
-# decision to get wrong - one reaction covers all of them. Drift toward a
-# wall on a straight stretch gets corrected the same way any other
-# obstacle does: it's just a "side got close" event.
+# decision to get wrong - one reaction covers all of them.
 #
 # Hardware, confirmed by direct testing on this robot:
 #   dist_1 = right sensor, dist_2 = left, dist_3 = front, dist_4 = rear
@@ -55,12 +58,20 @@ MOTOR_RIGHT_SIGN = 1
 CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
 TURN_SPEED = 140
 BACKUP_SPEED = 120
+# The inner wheel's speed while leaning away from a close side - well
+# below CRUISE_SPEED so the arc is tight enough to matter, but still a
+# real forward speed, never a stop. The outer wheel stays at CRUISE_SPEED
+# the whole time - see the side-adjust block in run().
+SIDE_ADJUST_SPEED = 90
 
 FRONT_STOP_CM = 35
-# A bit more clearance than a dead-ahead stop needs: with no slowdown
-# ramp, there's nothing nudging the robot away from a side wall early -
-# this is the only side defence there is.
-SIDE_STOP_CM = 12
+# Below this on either side, that side's wheel drops to SIDE_ADJUST_SPEED
+# every tick until the reading clears again - a continuous lean away from
+# the wall, not a one-off maneuver. No confirm-samples debounce here on
+# purpose: a wrong reaction is just one tick of mild correction with the
+# robot still moving forward, not a committed stop-and-turn, so a single
+# noisy reading costs nothing worth guarding against.
+SIDE_ADJUST_CM = 12
 NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
@@ -70,9 +81,6 @@ BACKUP_SECONDS = 0.2
 STUCK_BACKUP_SECONDS = 0.6   # a bigger backup once bouncing repeatedly
 STUCK_THRESHOLD = 2          # with no forward progress in between
 MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
-
-SIDE_AVOID_BACKUP_SECONDS = 0.10
-SIDE_AVOID_TURN_SECONDS = 0.15
 
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
@@ -164,15 +172,6 @@ class MazeSolver:
         else:
             self.rotate_until_clear(-TURN_SPEED, TURN_SPEED)
 
-    def bounce_off_side(self, close_sensor):
-        self.stop()
-        self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, SIDE_AVOID_BACKUP_SECONDS)
-        if close_sensor == SENSOR_LEFT:
-            self.timed_drive(TURN_SPEED, -TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
-        else:
-            self.timed_drive(-TURN_SPEED, TURN_SPEED, SIDE_AVOID_TURN_SECONDS)
-        self.stop()
-
     def read_distances(self):
         raw = {
             1: self.robot.get_dist_1(),
@@ -195,7 +194,7 @@ class MazeSolver:
         }
 
     def run(self):
-        print("speed_run: bump-and-turn maze solver running. Ctrl+C to stop.")
+        print("speed_run: maze solver running. Ctrl+C to stop.")
         started_at = time.monotonic()
 
         while not self.robot.shutdown_now:
@@ -247,16 +246,17 @@ class MazeSolver:
                 self.bounce_off_front()
                 continue
 
-            if left < SIDE_STOP_CM or right < SIDE_STOP_CM:
-                close_sensor = SENSOR_LEFT if left < right else SENSOR_RIGHT
-                side = "LEFT" if close_sensor == SENSOR_LEFT else "RIGHT"
-                print(f"\n>>> BOUNCE {side} at left={left:.0f} right={right:.0f}")
-                self.bounce_off_side(close_sensor)
-                self.front_blocked_streak = 0
-                continue
-
             self.consecutive_blocked = 0
-            self.send(CRUISE_SPEED, CRUISE_SPEED)
+
+            # Lean away from whichever side is close, still driving
+            # forward the whole time - see SIDE_ADJUST_CM/SIDE_ADJUST_SPEED.
+            if right < SIDE_ADJUST_CM:
+                left_speed, right_speed = SIDE_ADJUST_SPEED, CRUISE_SPEED
+            elif left < SIDE_ADJUST_CM:
+                left_speed, right_speed = CRUISE_SPEED, SIDE_ADJUST_SPEED
+            else:
+                left_speed, right_speed = CRUISE_SPEED, CRUISE_SPEED
+            self.send(left_speed, right_speed)
 
             remaining = CONTROL_PERIOD - (time.monotonic() - tick_started)
             if remaining > 0:
