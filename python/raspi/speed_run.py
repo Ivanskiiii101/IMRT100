@@ -122,14 +122,6 @@ DIRECTION_SETTLE_SECONDS = 0.05
 # different part of the maze still gets a fresh decision.
 RECENT_TURN_SECONDS = 3.0
 
-# If a side_nudge() happened this recently, avoid turning into that same
-# side when a fresh front-stop decision is made - see bounce_off_front().
-# Short on purpose: this is specifically about "was I hugging a wall on
-# the final approach to this stop," not a general memory of the maze -
-# an older nudge from earlier in a long corridor shouldn't still be
-# influencing a decision this many seconds removed from it.
-SIDE_NUDGE_MEMORY_SECONDS = 1.0
-
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
@@ -185,14 +177,6 @@ class MazeSolver:
         # end" - only "I'm stuck in literally the same spot."
         self.last_turn_was_right = None
         self.last_turn_at = None
-        # Which side the most recent side_nudge() was away from, and
-        # when - see side_nudge() and bounce_off_front(). Used to avoid
-        # turning into a wall the robot was just hugging closely enough
-        # to need a nudge away from, even if the reading taken right at
-        # the stop point (often less reliable right at a corner than a
-        # flat wall a few ticks earlier) suggests otherwise.
-        self.last_side_nudge = None
-        self.last_side_nudge_at = None
         # True while front is still inside SOUND_TRIGGER_CM, so the sound
         # fires once on the approach, not once per tick for as long as
         # it's close - reset the moment front is clear again.
@@ -248,25 +232,24 @@ class MazeSolver:
             # other way instead of asking the same question again.
             turn_right = not self.last_turn_was_right
         else:
-            recently_hugged_side = (
-                self.last_side_nudge is not None
-                and self.last_side_nudge_at is not None
-                and time.monotonic() - self.last_side_nudge_at
-                < SIDE_NUDGE_MEMORY_SECONDS
-            )
-            if recently_hugged_side:
-                # Was just close enough to this side to need a nudge away
-                # from it on the approach - don't turn into it, even if
-                # the reading taken right at the stop point suggests
-                # otherwise (see SIDE_NUDGE_MEMORY_SECONDS).
-                turn_right = self.last_side_nudge == SENSOR_LEFT
-            else:
-                for _ in range(DIRECTION_SETTLE_READS):
-                    distances = self.read_distances()
-                    time.sleep(DIRECTION_SETTLE_SECONDS)
-                left = distances[SENSOR_LEFT]
-                right = distances[SENSOR_RIGHT]
-                turn_right = right >= left
+            for _ in range(DIRECTION_SETTLE_READS):
+                distances = self.read_distances()
+                time.sleep(DIRECTION_SETTLE_SECONDS)
+            left = distances[SENSOR_LEFT]
+            right = distances[SENSOR_RIGHT]
+            turn_right = right >= left
+
+        # Whatever decided the direction above, never turn toward a side
+        # that's close right now - checked unconditionally, every time,
+        # so it can't be silently skipped by the recently_turned branch
+        # the way a check nested only in the other branch could be.
+        distances = self.read_distances()
+        left = distances[SENSOR_LEFT]
+        right = distances[SENSOR_RIGHT]
+        if turn_right and right < SIDE_ADJUST_CM:
+            turn_right = False
+        elif not turn_right and left < SIDE_ADJUST_CM:
+            turn_right = True
 
         self.last_turn_was_right = turn_right
         self.last_turn_at = time.monotonic()
@@ -290,8 +273,6 @@ class MazeSolver:
         # short duration: after it ends, run() reads fresh distances on
         # its very next iteration, rather than continuing to react to a
         # reading that's now out of date.
-        self.last_side_nudge = close_sensor
-        self.last_side_nudge_at = time.monotonic()
         if close_sensor == SENSOR_RIGHT:
             self.timed_drive(SIDE_ADJUST_SPEED, CRUISE_SPEED, SIDE_NUDGE_SECONDS)
         else:
