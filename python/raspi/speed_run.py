@@ -63,8 +63,10 @@ BACKUP_SPEED = 120
 # The inner wheel's speed while leaning away from a close side - well
 # below CRUISE_SPEED so the arc is tight enough to matter, but still a
 # real forward speed, never a stop. The outer wheel stays at CRUISE_SPEED
-# the whole time - see the side-adjust block in run().
-SIDE_ADJUST_SPEED = 90
+# the whole time - see the side-adjust block in run(). Lowered from 90 -
+# a bigger gap between the two wheels means a sharper arc away from the
+# wall, correcting faster once triggered.
+SIDE_ADJUST_SPEED = 70
 
 FRONT_STOP_CM = 35
 # Below this on either side, that side's wheel drops to SIDE_ADJUST_SPEED
@@ -73,7 +75,11 @@ FRONT_STOP_CM = 35
 # purpose: a wrong reaction is just one tick of mild correction with the
 # robot still moving forward, not a committed stop-and-turn, so a single
 # noisy reading costs nothing worth guarding against.
-SIDE_ADJUST_CM = 12
+# Raised from 12 - CRUISE_SPEED has grown to 165 since this was set, and
+# more speed means more distance covered before the lean has time to
+# create real clearance. Triggering earlier gives it more room to work
+# with before actual contact.
+SIDE_ADJUST_CM = 18
 NO_ECHO_RECOVERY_CM = 80  # see the 255-sentinel handling in read_distances()
 
 FRONT_BLOCK_CONFIRM_SAMPLES = 2
