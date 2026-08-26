@@ -69,10 +69,12 @@ BACKUP_SPEED = 120
 SIDE_ADJUST_SPEED = 70
 # How long the nudge lasts - both wheels stay forward (unlike a pivot,
 # where one reverses), so this needs to be long enough for the speed gap
-# to actually turn the heading a meaningful amount, roughly ~10 degrees.
-# Not calibrated against real angle measurements yet - tune this first if
-# the nudge turns out too sharp or too shallow on the robot.
-SIDE_NUDGE_SECONDS = 0.15
+# to actually turn the heading a meaningful amount, roughly ~5 degrees.
+# Not calibrated against real angle measurements - halved from 0.15
+# (roughly ~10 degrees) on the assumption that duration scales close to
+# linearly with angle for a turn this small. Tune further if it's still
+# off on the robot.
+SIDE_NUDGE_SECONDS = 0.075
 
 FRONT_STOP_CM = 35
 # Below this on either side, that side gets one side_nudge() - a single
