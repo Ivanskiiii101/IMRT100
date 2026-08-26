@@ -55,7 +55,9 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 150      # the one speed dial - bump this to go faster
+CRUISE_SPEED = 165      # was 150, +10% - CONTROL_PERIOD below is
+                        # tightened to match, same approach used
+                        # throughout this file's tuning history.
 TURN_SPEED = 140
 BACKUP_SPEED = 120
 # The inner wheel's speed while leaning away from a close side - well
@@ -82,6 +84,17 @@ STUCK_BACKUP_SECONDS = 0.6   # a bigger backup once bouncing repeatedly
 STUCK_THRESHOLD = 2          # with no forward progress in between
 MAX_CONSECUTIVE_STUCK = 6    # give up rather than bounce forever
 
+# After backing up, bounce_off_front() compares left/right to pick a
+# turn direction - but if one side has been consistently close for a
+# while right up until the bounce (e.g. hugging a wall down a long
+# corridor that then opens up), the median-of-5 history for that sensor
+# is still mostly "close" samples even once the robot is sitting right at
+# the opening. One reading isn't enough to move a median off stale data -
+# take a few fresh ones first so the comparison reflects what's actually
+# there now, not what was there several ticks ago.
+DIRECTION_SETTLE_READS = 3
+DIRECTION_SETTLE_SECONDS = 0.05
+
 TURN_STEP_SECONDS = 0.05
 MAX_TURN_SECONDS = 1.7  # safety cap only - see rotate_until_clear()
 
@@ -90,7 +103,11 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-CONTROL_PERIOD = 0.06
+# Tightened alongside CRUISE_SPEED: 150*0.06=9 (speed*period); holding
+# that constant at CRUISE_SPEED=165 gives 9/165=0.0545, rounded down to
+# 0.05 - same distance covered during the confirm window as before, not
+# more.
+CONTROL_PERIOD = 0.05
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
@@ -163,8 +180,11 @@ class MazeSolver:
             else BACKUP_SECONDS
         )
         self.timed_drive(-BACKUP_SPEED, -BACKUP_SPEED, backup)
+        self.stop()  # timed_drive() doesn't stop on its own when it ends
 
-        distances = self.read_distances()
+        for _ in range(DIRECTION_SETTLE_READS):
+            distances = self.read_distances()
+            time.sleep(DIRECTION_SETTLE_SECONDS)
         left = distances[SENSOR_LEFT]
         right = distances[SENSOR_RIGHT]
         if right >= left:
