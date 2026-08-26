@@ -58,7 +58,7 @@ SENSOR_REAR = 4  # read every tick, never used for a decision
 MOTOR_LEFT_SIGN = 1
 MOTOR_RIGHT_SIGN = 1
 
-CRUISE_SPEED = 173      # was 165, +5% - CONTROL_PERIOD below is
+CRUISE_SPEED = 182      # was 173, +5% - CONTROL_PERIOD below is
                         # tightened to match, same approach used
                         # throughout this file's tuning history.
 TURN_SPEED = 140
@@ -67,11 +67,10 @@ BACKUP_SPEED = 120
 # so the heading change is sharp enough to matter in a short burst, but
 # still a real forward speed, never a stop or a reverse. What actually
 # matters for the nudge's turn rate is the *gap* to CRUISE_SPEED, not
-# this value on its own - was 70 (a gap of 95 at the old CRUISE_SPEED=
-# 165). Raised to hold that same gap at the new CRUISE_SPEED=173
-# (173-95=78), so the ~5 degree calibration on SIDE_NUDGE_SECONDS still
-# holds instead of quietly turning a bit sharper.
-SIDE_ADJUST_SPEED = 78
+# this value on its own - held at a gap of 95 again (182-95=87), so the
+# ~5 degree calibration on SIDE_NUDGE_SECONDS still holds instead of
+# quietly turning a bit sharper each time CRUISE_SPEED goes up.
+SIDE_ADJUST_SPEED = 87
 # How long the nudge lasts - both wheels stay forward (unlike a pivot,
 # where one reverses), so this needs to be long enough for the speed gap
 # to actually turn the heading a meaningful amount, roughly ~5 degrees.
@@ -131,11 +130,11 @@ EXIT_CONFIRM_SAMPLES = 12
 START_GRACE_SECONDS = 5.0  # a spacious start bay can look like the exit
 
 SENSOR_NO_ECHO_RAW = 250
-# Tightened alongside CRUISE_SPEED again: 165*0.05=8.25 (speed*period);
-# holding that constant at CRUISE_SPEED=173 gives 8.25/173=0.0477,
-# rounded down to 0.047 - same distance covered during the confirm
+# Tightened alongside CRUISE_SPEED again: 173*0.047=8.131 (speed*period);
+# holding that constant at CRUISE_SPEED=182 gives 8.131/182=0.0447,
+# rounded down to 0.044 - same distance covered during the confirm
 # window as before, not more.
-CONTROL_PERIOD = 0.047
+CONTROL_PERIOD = 0.044
 
 # Real speaker output (not the piezo GPIO buzzer) - played via an external
 # player process, not GPIO, so it can handle an actual MP3 file.
