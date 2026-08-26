@@ -1,6 +1,5 @@
 import imrt_robot_serial
 import imrt_xbox
-import math
 import time
 
 
@@ -11,11 +10,7 @@ def main():
 
     loop_period = 0.1 # s, matches the time.sleep() at the end of the loop
 
-    # Throttle/brake (RT/LT) tuning.
-    max_speed = 2.0      # m/s, top forward/reverse speed
-    accel_rate = 2.0     # m/s^2 at full RT
-    decel_rate = 4.0     # m/s^2 at full LT (brakes harder than the accel ramps)
-    idle_decay_rate = 0.5 # m/s^2 passive coast-down when neither trigger is pressed
+    max_speed = 3.0 # m/s, top forward/reverse speed
 
     # Exponential smoothing factor for the steering command (0-1). Lower
     # values give a smoother/slower turn response, higher values are
@@ -40,7 +35,6 @@ def main():
     motor_serial.run()
 
 
-    speed = 0.0 # m/s, persistent throttle/brake state driven by RT/LT
     wz_smoothed = 0.0
 
     try:
@@ -56,15 +50,9 @@ def main():
             accel_in = controller.get_right_trigger() # 0.0-1.0
             decel_in = controller.get_left_trigger()   # 0.0-1.0
 
-            # RT ramps speed up, LT ramps it down (and past zero into
-            # reverse if held). With neither pressed, speed coasts back
-            # toward zero so the robot doesn't run away unattended.
-            speed += accel_rate * accel_in * loop_period
-            speed -= decel_rate * decel_in * loop_period
-            if accel_in < 0.05 and decel_in < 0.05:
-                decay = min(abs(speed), idle_decay_rate * loop_period)
-                speed -= math.copysign(decay, speed)
-            speed = max(-max_speed, min(max_speed, speed))
+            # Speed tracks trigger press directly: harder press = faster,
+            # and it drops back to zero the instant both are released.
+            vx = max_speed * (accel_in - decel_in)
 
             # Left stick steers: how far left/right it's pushed sets the turn rate.
             wz_target = -wz_gain * ax_lx
@@ -73,7 +61,6 @@ def main():
             # translate into a sudden jolt in the motor commands.
             wz_smoothed += smoothing_alpha * (wz_target - wz_smoothed)
 
-            vx = speed
             wz = wz_smoothed
             print(vx, wz)
 
